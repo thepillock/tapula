@@ -2,7 +2,8 @@
 
 Self-hosted, swipeable micro-lessons, in the spirit of 7taps.
 
-- **Editor:** build lessons from cards. Each card can hold headings, text, images (optionally full-bleed), video, quizzes or polls, and button links. Drag to reorder; changes autosave.
+- **Accounts:** one admin creates editor accounts. New editors pick their own password on first sign-in, everyone can change their password, and the admin can reset, disable or delete accounts.
+- **Editor:** build lessons from cards. Each card can hold headings, text, images (optionally full-bleed), video, quizzes or polls (feedback shows in a pop-up sheet), and button links. Drag to reorder; changes autosave.
 - **Player:** learners open a link (`/l/<id>`) and swipe through the cards on any device. On tablets and desktops the lesson shows inside a phone mockup. Returning viewers pick up where they left off.
 - **Stats:** for each lesson you see viewers, visits, completions, average progress, a per-card "how far people got" chart, new viewers per day, and quiz answer breakdowns. Tracking is anonymous: each browser gets a random ID.
 - **Export:** download any lesson as a single standalone HTML file, with media embedded.
@@ -13,7 +14,7 @@ No dependencies. It's one Node.js file, uses the SQLite built into Node (22.13+)
 
 ```bash
 ADMIN_PASSWORD=secret npm start
-# open http://localhost:3000 and sign in
+# open http://localhost:3000 and sign in as "admin" / "secret"
 ```
 
 Data lives in `./data` (`tapula.db` plus `uploads/`).
@@ -45,13 +46,27 @@ Or use `docker-compose.yml`.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ADMIN_PASSWORD` | *(required)* | Password for the editor. Changing it signs out all sessions. |
+| `ADMIN_PASSWORD` | *(first run only)* | Creates the admin account when no accounts exist yet. It's ignored after that, so change your password in the app and you can remove the variable. |
+| `ADMIN_USERNAME` | `admin` | Username for that first admin account. |
 | `PUBLIC_URL` | derived from request | Base URL used in share links and link previews (e.g. `https://learn.example.com`). |
 | `PORT` | `3000` | Listen port. |
 | `DATA_DIR` | `./data` (`/data` in Docker) | Database, uploads and session key. |
 | `MAX_UPLOAD_MB` | `100` | Max size per uploaded file. |
 | `PUID` / `PGID` | `99` / `100` | (Docker only) User/group the server runs as; the data folder is chowned to it on start. Unraid's defaults are 99/100. |
 | `TRUST_PROXY` | `true` | Trust `X-Forwarded-*` headers from your reverse proxy. Set to `false` if it's exposed directly. |
+
+## Accounts
+
+- **Admin** (one account, created on first run): everything below, plus **Users**, where you add editors, reset their passwords, and disable or delete them.
+- **Editors** can create, edit, publish and delete any lesson, and see all stats.
+- New editors and reset accounts get a temporary password and must choose their own when they next sign in.
+- Changing your password signs out your other devices.
+
+**Forgotten the admin password?** Reset it from the server:
+
+```bash
+docker exec -u 99:100 tapula node server.js reset-password admin 'new-password-here'
+```
 
 ## How it works
 

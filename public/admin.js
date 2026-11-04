@@ -11,7 +11,7 @@ const ACCENTS = ['#ff5a36', '#6c4cf0', '#0f9d8a', '#2f6fed', '#e0457b', '#e89a00
 const LABEL = { heading: ['H', 'Heading'], text: ['¶', 'Text'], image: ['▣', 'Image'], video: ['▶', 'Video'], quiz: ['?', 'Quiz'], link: ['↗', 'Button link'] };
 const IMG_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const VID_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
-let config = { baseUrl: location.origin, maxUploadMb: 100 };
+let config = { baseUrl: location.origin, maxUploadMb: 100, me: { name: '', role: 'editor' }, minPassword: 8 };
 let cleanup = null;
 
 /* ---------------- api ---------------- */
@@ -24,6 +24,7 @@ async function api(method, url, body) {
   if (r.status === 401) { location.href = '/login'; throw new Error('Signed out'); }
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
+    if (j.code === 'must_change') { config.me.mustChange = true; route(); throw new Error(j.error); }
     throw new Error(j.error || r.statusText || 'Request failed');
   }
   return r.status === 204 ? null : r.json();
@@ -95,21 +96,145 @@ function route() {
   tip.classList.remove('on');
   if (cleanup) { try { cleanup(); } catch (e) {} cleanup = null; }
   const h = location.hash.slice(1);
+  if (config.me.mustChange) return showAccount(true);
+  if (h === 'account') return showAccount(false);
+  if (h === 'users') return config.me.role === 'admin' ? showUsers() : (location.hash = '');
   if (h.startsWith('edit-') && ID_RE.test(h.slice(5))) return showEditor(h.slice(5));
   if (h.startsWith('stats-') && ID_RE.test(h.slice(6))) return showStats(h.slice(6));
   showHome();
+}
+
+/* ---------------- account & users ---------------- */
+function userMenu() {
+  return `<span class="who">${esc(config.me.name || config.me.username)}${config.me.role === 'admin' ? ' <span class="badge">Admin</span>' : ''}</span>
+    <a class="btn ghost signout" href="#account">Account</a>
+    ${config.me.role === 'admin' ? '<a class="btn ghost signout" href="#users">Users</a>' : ''}
+    <button class="btn ghost signout" id="out">Sign out</button>`;
+}
+function wireUserMenu() {
+  const o = $('#out');
+  if (o) o.addEventListener('click', async () => { await api('POST', '/api/logout').catch(() => {}); location.href = '/login'; });
+}
+function genPassword() {
+  const a = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => a[b % a.length]).join('');
+}
+function formMsg(el, text, ok) { el.textContent = text; el.className = 'form-msg ' + (ok ? 'ok' : 'err'); }
+
+function showAccount(forced) {
+  const me = config.me;
+  shell(`<div class="st narrow">
+    <div class="st-top">${forced ? '<div class="brand"><span class="logo"></span>Tapula</div>' : '<a class="btn ghost" href="#">← Lessons</a>'}<span class="sp"></span>${forced ? '<button class="btn ghost signout" id="out">Sign out</button>' : ''}</div>
+    <h1>${forced ? 'Choose a new password' : 'Your account'}</h1>
+    <p class="sub">${forced ? 'Your account was set up with a temporary password. Pick your own to continue.' : `Signed in as <b>${esc(me.username)}</b>${me.role === 'admin' ? ' (admin)' : ''}.`}</p>
+    ${forced ? '' : `<form class="panel form" id="nameF"><h3>Display name</h3><p class="note">Shown next to lessons you edit.</p>
+      <div class="frow2"><input class="in" id="nm" maxlength="60"><button class="btn primary">Save</button></div><div class="form-msg" id="nameMsg"></div></form>`}
+    <form class="panel form" id="pwF"><h3>Change password</h3><p class="note">At least ${config.minPassword} characters. Signs you out on your other devices.</p>
+      <label class="fld"><span>${forced ? 'Temporary password' : 'Current password'}</span><input class="in" type="password" id="cur" autocomplete="current-password" required></label>
+      <label class="fld"><span>New password</span><input class="in" type="password" id="nw" autocomplete="new-password" required minlength="${config.minPassword}"></label>
+      <label class="fld"><span>Repeat new password</span><input class="in" type="password" id="nw2" autocomplete="new-password" required></label>
+      <div class="row" style="margin-top:14px"><button class="btn primary">Change password</button></div><div class="form-msg" id="pwMsg"></div></form>
+  </div>`);
+  wireUserMenu();
+  const nf = $('#nameF');
+  if (nf) {
+    $('#nm').value = me.name || '';
+    nf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try { await api('PATCH', '/api/me', { name: $('#nm').value }); me.name = $('#nm').value.trim(); formMsg($('#nameMsg'), 'Saved.', true); }
+      catch (x) { formMsg($('#nameMsg'), x.message); }
+    });
+  }
+  $('#pwF').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = $('#pwMsg');
+    if ($('#nw').value !== $('#nw2').value) return formMsg(msg, 'The new passwords don\u2019t match.');
+    try {
+      await api('POST', '/api/me/password', { current: $('#cur').value, next: $('#nw').value });
+      $('#pwF').reset();
+      if (forced) { me.mustChange = false; location.hash = ''; route(); return; }
+      formMsg(msg, 'Password changed.', true);
+    } catch (x) { formMsg(msg, x.message); }
+  });
+}
+
+async function showUsers() {
+  shell(`<div class="st">
+    <div class="st-top"><a class="btn ghost" href="#">← Lessons</a><span class="sp"></span></div>
+    <h1>Users</h1><p class="sub">Editors can create, edit, publish and view stats for all lessons. Only you can manage accounts.</p>
+    <form class="panel form" id="addF"><h3>Add an editor</h3><p class="note">They'll be asked to choose their own password the first time they sign in.</p>
+      <div class="grid3">
+        <label class="fld"><span>Username</span><input class="in" id="au" required autocapitalize="none" spellcheck="false" placeholder="e.g. sam"></label>
+        <label class="fld"><span>Display name</span><input class="in" id="an" placeholder="e.g. Sam Smith"></label>
+        <label class="fld"><span>Temporary password</span><div class="frow2"><input class="in mono" id="ap" required></div></label>
+      </div>
+      <div class="row" style="margin-top:14px"><button class="btn primary">Add editor</button></div><div class="form-msg" id="addMsg"></div></form>
+    <div class="panel"><h3>Accounts</h3><div style="overflow-x:auto"><table class="recent users" id="ut"></table></div></div>
+  </div>`);
+  $('#ap').value = genPassword();
+  $('#addF').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = $('#ap').value, un = $('#au').value.trim().toLowerCase();
+    try {
+      await api('POST', '/api/users', { username: un, name: $('#an').value, password: pw });
+      formMsg($('#addMsg'), `Added ${un}. Send them their username and temporary password: ${pw}`, true);
+      $('#au').value = ''; $('#an').value = ''; $('#ap').value = genPassword();
+      load();
+    } catch (x) { formMsg($('#addMsg'), x.message); }
+  });
+  load();
+
+  async function load() {
+    let users;
+    try { users = await api('GET', '/api/users'); } catch (x) { $('#ut').innerHTML = `<tr><td>${esc(x.message)}</td></tr>`; return; }
+    const t = $('#ut'); if (!t) return;
+    t.innerHTML = '<thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody></tbody>';
+    const tb = t.querySelector('tbody');
+    users.forEach((u) => {
+      const self = u.id === config.me.id;
+      const tr = document.createElement('tr');
+      const status = u.disabled ? '<span class="badge">Disabled</span>' : u.mustChange ? '<span class="badge warn">Awaiting first sign-in</span>' : '<span class="badge live">Active</span>';
+      tr.innerHTML = `<td class="mono">${esc(u.username)}${self ? ' <span class="muted">(you)</span>' : ''}</td><td></td><td>${u.role === 'admin' ? 'Admin' : 'Editor'}</td><td>${status}</td><td>${u.lastLogin ? esc(ago(u.lastLogin)) : '<span class="muted">never</span>'}</td><td class="acts-cell"></td>`;
+      tr.children[1].textContent = u.name || '';
+      const cell = tr.querySelector('.acts-cell');
+      if (!self) {
+        const reset = document.createElement('button'); reset.className = 'btn sm'; reset.textContent = 'Reset password';
+        reset.addEventListener('click', async () => {
+          const pw = genPassword();
+          try { await api('POST', `/api/users/${u.id}/password`, { password: pw }); showNote(tr, `New temporary password for ${u.username}: `, pw); tr.children[3].innerHTML = '<span class="badge warn">Awaiting first sign-in</span>'; }
+          catch (x) { showNote(tr, x.message); }
+        });
+        const dis = document.createElement('button'); dis.className = 'btn sm ghost'; dis.textContent = u.disabled ? 'Enable' : 'Disable';
+        dis.addEventListener('click', async () => { try { await api('PATCH', '/api/users/' + u.id, { disabled: !u.disabled }); load(); } catch (x) { showNote(tr, x.message); } });
+        const del = document.createElement('button'); del.className = 'btn sm ghost danger'; del.textContent = 'Delete';
+        twoStep(del, 'Delete', async () => { try { await api('DELETE', '/api/users/' + u.id); load(); } catch (x) { showNote(tr, x.message); } });
+        cell.append(reset, dis, del);
+      } else {
+        cell.innerHTML = '<a class="btn sm ghost" href="#account">Change password</a>';
+      }
+      tb.appendChild(tr);
+    });
+  }
+  function showNote(tr, text, code) {
+    const old = tr.nextElementSibling; if (old && old.classList.contains('note-row')) old.remove();
+    const nr = document.createElement('tr'); nr.className = 'note-row';
+    nr.innerHTML = '<td colspan="6"></td>';
+    nr.firstChild.textContent = text;
+    if (code) { const c = document.createElement('code'); c.textContent = code; nr.firstChild.appendChild(c); }
+    tr.after(nr);
+  }
 }
 
 /* ---------------- library ---------------- */
 async function showHome() {
   shell(`<div class="home">
     <header class="top"><div class="brand"><span class="logo"></span>Tapula</div>
-      <div class="row"><button class="btn ghost signout" id="out">Sign out</button><button class="btn primary" id="new">+ New lesson</button></div></header>
+      <div class="row">${userMenu()}<button class="btn primary" id="new">+ New lesson</button></div></header>
     <section class="intro"><h1>Your lessons</h1><p>Build bite-size lessons from cards of text, images, video and quick quizzes. Publish one and anyone with the link can swipe through it, no sign-in needed.</p></section>
     <div id="list" class="grid"><div class="muted">Loading lessons…</div></div>
   </div>`);
   $('#new').addEventListener('click', createLesson);
-  $('#out').addEventListener('click', async () => { await api('POST', '/api/logout').catch(() => {}); location.href = '/login'; });
+  wireUserMenu();
   let list;
   try { list = await api('GET', '/api/courses'); } catch (e) { $('#list').innerHTML = `<div class="muted">Couldn’t load lessons: ${esc(e.message)}</div>`; return; }
   const box = $('#list');
@@ -123,7 +248,7 @@ async function showHome() {
     const el = document.createElement('div'); el.className = 'lesson';
     const rate = c.viewers ? Math.round(c.completed / c.viewers * 100) : 0;
     el.innerHTML = `<div class="cover"><span class="badge ${c.published ? 'live' : ''}">${c.published ? 'Live' : 'Draft'}</span></div>
-      <div class="meta"><h3></h3><p>${c.cardCount} card${c.cardCount === 1 ? '' : 's'} · edited ${esc(ago(c.updatedAt))}</p>
+      <div class="meta"><h3></h3><p>${c.cardCount} card${c.cardCount === 1 ? '' : 's'} · edited ${esc(ago(c.updatedAt))}${c.updatedBy ? ' by ' + esc(c.updatedBy) : ''}</p>
       <div class="stats-line"><span><b>${c.viewers}</b> viewer${c.viewers === 1 ? '' : 's'}</span><span><b>${rate}%</b> completed</span></div></div>
       <div class="acts"><a class="btn" href="#edit-${c.id}">Edit</a><a class="btn ghost" href="#stats-${c.id}">Stats</a><span class="sp"></span><button class="btn ghost" data-a="dup" title="Duplicate">⧉</button><button class="btn ghost danger" data-a="del">Delete</button></div>`;
     el.querySelector('h3').textContent = c.title || 'Untitled lesson';

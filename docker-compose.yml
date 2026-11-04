@@ -7,7 +7,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      ADMIN_PASSWORD: "change-me"                 # required
+      ADMIN_PASSWORD: "change-me"                 # creates the "admin" account on first run
       PUBLIC_URL: "https://learn.example.com"     # optional: used for share links / previews
       MAX_UPLOAD_MB: "100"                        # optional
       # TRUST_PROXY: "false"                      # set if NOT behind a reverse proxy

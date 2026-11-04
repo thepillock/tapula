@@ -74,3 +74,22 @@
 .tp-end .tp-inner{align-items:center;text-align:center}
 .tp-done{width:78px;height:78px;border-radius:50%;background:var(--tp-accent);display:grid;place-items:center;font-size:36px;color:#fff;margin-bottom:6px}
 .tp-again{margin-top:10px;padding:12px 22px;border-radius:999px;border:1.5px solid rgba(255,255,255,.35);background:transparent;color:#fff;font:inherit;font-weight:600;cursor:pointer}
+.tp-sheet-wrap{position:absolute;inset:0;z-index:8;pointer-events:none}
+.tp-sheet-bg{position:absolute;inset:0;background:rgba(10,10,14,.5);opacity:0;transition:opacity .25s}
+.tp-sheet{position:absolute;left:0;right:0;bottom:0;max-height:78%;overflow-y:auto;background:#fff;color:#17161b;border-radius:26px 26px 0 0;padding:14px 24px calc(22px + env(safe-area-inset-bottom));transform:translateY(105%);transition:transform .34s cubic-bezier(.2,.8,.2,1);box-shadow:0 -12px 40px rgba(0,0,0,.25);font-family:Inter,system-ui,sans-serif;box-sizing:border-box;user-select:text;-webkit-user-select:text}
+.tp-sheet::before{content:"";display:block;width:40px;height:4px;border-radius:2px;background:#dcd7cf;margin:0 auto 18px}
+.tp-sheet-wrap.open{pointer-events:auto}
+.tp-sheet-wrap.open .tp-sheet-bg{opacity:1}
+.tp-sheet-wrap.open .tp-sheet{transform:none}
+.tp-sheet-head{display:flex;align-items:center;gap:14px;margin-bottom:12px}
+.tp-sheet-ic{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-size:22px;font-weight:700;color:#fff;background:var(--tp-accent);flex:none}
+.tp-right .tp-sheet-ic{background:#1c9a55}
+.tp-wrong .tp-sheet-ic{background:#d44040}
+.tp-sheet-title{font-family:'Bricolage Grotesque',Inter,sans-serif;font-size:26px;font-weight:800;letter-spacing:-.02em}
+.tp-sheet-body{font-size:16px;line-height:1.55;color:#3a3740}
+.tp-sheet-body p{margin:0 0 10px}
+.tp-sheet-body b{color:#17161b}
+.tp-sheet-acts{display:flex;gap:10px;margin-top:18px}
+.tp-sheet-acts button{flex:1;font:600 16px Inter,system-ui,sans-serif;padding:14px;border-radius:14px;border:0;cursor:pointer}
+.tp-sheet-close{background:#f1eee9;color:#17161b}
+.tp-sheet-next{background:var(--tp-accent);color:#fff;flex:2!important}

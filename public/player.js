@@ -36,9 +36,15 @@ function block(b,media,opt){
           if(hasAns){
             w.querySelectorAll('.tp-opt')[b.correct].classList.add('right');
             if(k!==b.correct)btn.classList.add('wrong');
-            fb.innerHTML=(k===b.correct?'<b>Correct!</b> ':'<b>Not quite.</b> ')+fmt(b.explain||'');
-          }else{btn.classList.add('picked');fb.innerHTML=fmt(b.explain||'Thanks for answering.');}
-          fb.classList.add('show');
+          }else btn.classList.add('picked');
+          var detail={result:hasAns?(k===b.correct?'right':'wrong'):'poll',picked:o,answer:hasAns?opts[b.correct]:null,explain:b.explain||''};
+          var ev;
+          try{ev=new CustomEvent('tp-feedback',{bubbles:true,cancelable:true,detail:detail});}catch(_){ev=null;}
+          if(ev)btn.dispatchEvent(ev);
+          if(!ev||!ev.defaultPrevented){
+            fb.innerHTML=hasAns?((k===b.correct?'<b>Correct!</b> ':'<b>Not quite.</b> ')+fmt(b.explain||'')):fmt(b.explain||'Thanks for answering.');
+            fb.classList.add('show');
+          }
           if(opt.onAnswer&&b.id)opt.onAnswer(b.id,k);
         });
         w.appendChild(btn);
@@ -88,6 +94,28 @@ function play(root,course,opt){
   var prog=h('div','tp-progress');cards.forEach(function(){prog.appendChild(h('div','tp-seg','<i></i>'));});clip.appendChild(prog);
   if(opt.onExit){var x=h('button','tp-close','×');x.type='button';x.setAttribute('aria-label','Close');x.addEventListener('click',opt.onExit);clip.appendChild(x);}
   var hint=h('div','tp-hint','Swipe to continue');clip.appendChild(hint);
+  var sheetWrap=h('div','tp-sheet-wrap','<div class="tp-sheet-bg"></div><div class="tp-sheet" role="dialog" aria-modal="true" aria-labelledby="tp-sheet-title"><div class="tp-sheet-head"><div class="tp-sheet-ic"></div><div class="tp-sheet-title" id="tp-sheet-title"></div></div><div class="tp-sheet-body"></div><div class="tp-sheet-acts"><button type="button" class="tp-sheet-close">Close</button><button type="button" class="tp-sheet-next">Continue \u203a</button></div></div>');
+  clip.appendChild(sheetWrap);
+  var sheetOpen=false;
+  function openSheet(d){
+    var sh=sheetWrap.querySelector('.tp-sheet'),ic=sheetWrap.querySelector('.tp-sheet-ic'),t=sheetWrap.querySelector('.tp-sheet-title'),body=sheetWrap.querySelector('.tp-sheet-body');
+    sh.className='tp-sheet tp-'+d.result;
+    ic.textContent=d.result==='wrong'?'\u2715':'\u2713';
+    t.textContent=d.result==='right'?'Correct!':d.result==='wrong'?'Not quite':'Thanks for answering';
+    var html='';
+    if(d.result==='wrong'&&d.answer!=null)html+='<p class="tp-sheet-ans">The answer is <b>'+esc(d.answer)+'</b>.</p>';
+    if(d.result==='poll')html+='<p class="tp-sheet-ans">You chose <b>'+esc(d.picked)+'</b>.</p>';
+    if(d.explain)html+='<p>'+fmt(d.explain)+'</p>';
+    body.innerHTML=html;
+    sheetWrap.querySelector('.tp-sheet-next').textContent=i>=N-2?'Finish \u203a':'Continue \u203a';
+    sheetWrap.classList.add('open');sheetOpen=true;
+    setTimeout(function(){try{sheetWrap.querySelector('.tp-sheet-next').focus({preventScroll:true});}catch(_){}},50);
+  }
+  function closeSheet(){if(!sheetOpen)return;sheetWrap.classList.remove('open');sheetOpen=false;}
+  track.addEventListener('tp-feedback',function(e){e.preventDefault();openSheet(e.detail);});
+  sheetWrap.querySelector('.tp-sheet-bg').addEventListener('click',closeSheet);
+  sheetWrap.querySelector('.tp-sheet-close').addEventListener('click',closeSheet);
+  sheetWrap.querySelector('.tp-sheet-next').addEventListener('click',function(){closeSheet();go(i+1);});
   var nav=h('div','tp-nav'),prev=h('button','tp-btn','‹'),count=h('div','tp-count'),next=h('button','tp-btn tp-next','›');
   prev.type=next.type='button';prev.setAttribute('aria-label','Previous');next.setAttribute('aria-label','Next');
   nav.appendChild(prev);nav.appendChild(count);nav.appendChild(next);clip.appendChild(nav);
@@ -96,6 +124,7 @@ function play(root,course,opt){
   var i=0,N=els.length;
   function go(n,anim){
     n=Math.max(0,Math.min(N-1,n));
+    closeSheet();
     if(n>0)hint.classList.add('gone');
     i=n;
     track.style.transition=anim===false?'none':'transform .38s cubic-bezier(.2,.8,.2,1)';
@@ -170,6 +199,7 @@ function play(root,course,opt){
     var t=e.target;if(t&&t.closest&&t.closest('input,textarea'))return;
     if(e.key==='ArrowRight'||e.key==='PageDown'){go(i+1);}
     else if(e.key==='ArrowLeft'||e.key==='PageUp'){go(i-1);}
+    else if(e.key==='Escape'&&sheetOpen){closeSheet();}
     else if(e.key==='Escape'&&opt.onExit){opt.onExit();}
   }
   window.addEventListener('keydown',key);
