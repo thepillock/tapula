@@ -26,7 +26,12 @@ if (!ADMIN_PASSWORD) {
   console.error('ADMIN_PASSWORD is not set. Set it in the environment and restart.');
   process.exit(1);
 }
-fs.mkdirSync(UPLOADS, { recursive: true });
+try { fs.mkdirSync(UPLOADS, { recursive: true }); fs.accessSync(DATA_DIR, fs.constants.W_OK); }
+catch (e) {
+  console.error(`Cannot write to ${DATA_DIR} (${e.code}). The container user (uid ${process.getuid?.()}) needs write access to the data folder.`);
+  console.error('Fix: set PUID/PGID to the folder owner, or run: chown -R <uid>:<gid> <host data folder>');
+  process.exit(1);
+}
 
 const secretFile = path.join(DATA_DIR, 'secret.key');
 if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });

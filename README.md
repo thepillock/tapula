@@ -38,7 +38,7 @@ Or use `docker-compose.yml`.
    - Repository: `tapula`
    - Port: container `3000` → host e.g. `3000`
    - Path: container `/data` → host `/mnt/user/appdata/tapula`
-   - Variables: `ADMIN_PASSWORD`, `PUBLIC_URL` (and optionally `MAX_UPLOAD_MB`)
+   - Variables: `ADMIN_PASSWORD`, `PUBLIC_URL` (and optionally `MAX_UPLOAD_MB`, `PUID`, `PGID`)
 3. In **Nginx Proxy Manager**, add a proxy host (e.g. `learn.yourdomain`) pointing to `unraid-ip:3000`. Turn on SSL, and raise the upload limit for video by adding `client_max_body_size 200m;` under *Advanced*.
 
 ## Configuration
@@ -50,6 +50,7 @@ Or use `docker-compose.yml`.
 | `PORT` | `3000` | Listen port. |
 | `DATA_DIR` | `./data` (`/data` in Docker) | Database, uploads and session key. |
 | `MAX_UPLOAD_MB` | `100` | Max size per uploaded file. |
+| `PUID` / `PGID` | `99` / `100` | (Docker only) User/group the server runs as; the data folder is chowned to it on start. Unraid's defaults are 99/100. |
 | `TRUST_PROXY` | `true` | Trust `X-Forwarded-*` headers from your reverse proxy. Set to `false` if it's exposed directly. |
 
 ## How it works
