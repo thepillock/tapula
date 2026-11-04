@@ -8,7 +8,21 @@ const rid = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => 
 const ID_RE = /^[a-z0-9]{4,40}$/;
 const SWATCHES = ['#ffffff', '#fff4e6', '#f3efe7', '#e6f0ff', '#e5f6ec', '#ffe6ec', '#17161b', '#1f2a4d', '#24453a', '#ff5a36'];
 const ACCENTS = ['#ff5a36', '#6c4cf0', '#0f9d8a', '#2f6fed', '#e0457b', '#e89a00', '#17161b'];
-const LABEL = { heading: ['H', 'Heading'], text: ['¶', 'Text'], image: ['▣', 'Image'], video: ['▶', 'Video'], quiz: ['?', 'Quiz'], link: ['↗', 'Button link'] };
+const LABEL = { heading: ['H', 'Heading'], text: ['¶', 'Text'], image: ['▣', 'Image'], video: ['▶', 'Video'], audio: ['♪', 'Speech'], quiz: ['?', 'Quiz'], link: ['↗', 'Button link'] };
+const AUD_TYPES = ['audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/webm'];
+const SPEEDS = [[0.8, 'Slow'], [0.9, 'Relaxed'], [1, 'Normal'], [1.1, 'Brisk'], [1.25, 'Fast']];
+let voicesP = null;
+function getVoices(refresh) {
+  if (!voicesP || refresh) voicesP = api('GET', '/api/tts/voices' + (refresh ? '?refresh' : '')).catch((e) => ({ enabled: false, error: e.message }));
+  return voicesP;
+}
+function hashKey(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+const audioKey = (b) => hashKey(`${(b.script || '').trim()}|${b.voice || ''}|${b.speed || 1}`);
+async function ttsAudio(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Tapula': '1' }, body: JSON.stringify(body) });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'Request failed'); }
+  return r;
+}
 const IMG_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const VID_TYPES = ['video/mp4', 'video/webm', 'video/quicktime'];
 let config = { baseUrl: location.origin, maxUploadMb: 100, me: { name: '', role: 'editor' }, minPassword: 8 };
@@ -445,6 +459,7 @@ async function showEditor(cid) {
       case 'video': return { id, type, asset: null, caption: '' };
       case 'quiz': return { id, type, question: '', options: ['', ''], correct: 0, explain: '' };
       case 'link': return { id, type, label: 'Learn more', url: 'https://' };
+      case 'audio': return { id, type, title: '', script: '', voice: '', speed: 1, asset: null, genKey: null, transcript: true, autoplay: false };
     }
   }
 
@@ -497,6 +512,7 @@ async function showEditor(cid) {
         w.appendChild(field('Feedback after answering (optional)', textarea(b.explain, (v) => { b.explain = v; live(); }, 'Explain the answer…')));
         break;
       }
+      case 'audio': w.appendChild(speechEditor(b)); break;
       case 'link': {
         w.appendChild(field('Button label', input(b.label, (v) => { b.label = v; live(); })));
         const warn = document.createElement('div'); warn.className = 'warn';
@@ -507,6 +523,113 @@ async function showEditor(cid) {
       }
     }
     return w;
+  }
+
+  function speechEditor(b) {
+    const box = document.createElement('div');
+    box.innerHTML = `<div class="sp-note" hidden></div>
+      <label class="fld"><span>Title <span class="muted">(shown on the player)</span></span><input class="in" data-f="title" placeholder="e.g. Why grind size matters" maxlength="80"></label>
+      <label class="fld"><span>Script <span class="muted sp-count"></span></span><textarea class="ta" data-f="script" rows="6" placeholder="Write what the narrator should say…"></textarea></label>
+      <div class="sp-row">
+        <label class="fld"><span>Voice</span><select class="in" data-f="voice"><option value="">Loading voices…</option></select></label>
+        <label class="fld" style="max-width:120px"><span>Speed</span><select class="in" data-f="speed">${SPEEDS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+        <button type="button" class="btn sm sp-sample" title="Hear a short sample">▶ Sample</button>
+      </div>
+      <div class="sp-gen"><button type="button" class="btn primary sm sp-go"></button><span class="sp-state"></span></div>
+      <audio class="sp-preview" controls preload="none" hidden></audio>
+      <div class="hint"><button type="button" class="linkish sp-up">Upload a recording instead</button> (MP3, M4A, WAV or OGG)</div>
+      <input type="file" hidden accept="${AUD_TYPES.join(',')},.mp3,.m4a,.wav,.ogg">
+      <label class="chk"><input type="checkbox" data-f="transcript"> Learners can show the transcript</label>
+      <label class="chk"><input type="checkbox" data-f="autoplay"> Play automatically when the card opens</label>`;
+    const f = (n) => box.querySelector(`[data-f="${n}"]`);
+    const note = box.querySelector('.sp-note'), count = box.querySelector('.sp-count');
+    const go = box.querySelector('.sp-go'), state = box.querySelector('.sp-state'), prev = box.querySelector('.sp-preview');
+    const sampleBtn = box.querySelector('.sp-sample'), fi = box.querySelector('input[type=file]');
+    let ttsOn = false, busy = false;
+    f('title').value = b.title || ''; f('script').value = b.script || '';
+    f('speed').value = String(b.speed || 1); f('transcript').checked = !!b.transcript; f('autoplay').checked = !!b.autoplay;
+
+    function paint() {
+      count.textContent = `· ${(b.script || '').length} / 5000`;
+      const fresh = b.asset && (b.genKey === audioKey(b) || b.genKey === 'upload');
+      go.textContent = busy ? 'Generating…' : b.asset ? 'Regenerate audio' : 'Generate audio';
+      go.disabled = busy || !ttsOn || !(b.script || '').trim() || !b.voice;
+      sampleBtn.disabled = busy || !ttsOn || !b.voice;
+      if (busy) { state.className = 'sp-state'; state.textContent = (b.script || '').length > 800 ? 'This can take a little while for long scripts…' : ''; }
+      else if (!b.asset) { state.className = 'sp-state'; state.textContent = ttsOn ? 'No audio yet.' : ''; }
+      else if (b.genKey === 'upload') { state.className = 'sp-state ok'; state.textContent = 'Using an uploaded recording.'; }
+      else if (fresh) { state.className = 'sp-state ok'; state.textContent = '✓ Audio is up to date.'; }
+      else { state.className = 'sp-state warn'; state.textContent = 'Script, voice or speed changed. Regenerate to update the audio.'; }
+      if (b.asset) { if (prev.dataset.src !== b.asset) { prev.src = media(b.asset); prev.dataset.src = b.asset; } prev.hidden = false; } else prev.hidden = true;
+    }
+    f('title').addEventListener('input', () => { b.title = f('title').value; live(); });
+    f('script').addEventListener('input', () => { b.script = f('script').value; live(); paint(); });
+    f('voice').addEventListener('change', () => { b.voice = f('voice').value; touch(); paint(); });
+    f('speed').addEventListener('change', () => { b.speed = Number(f('speed').value); touch(); paint(); });
+    f('transcript').addEventListener('change', () => { b.transcript = f('transcript').checked; live(); });
+    f('autoplay').addEventListener('change', () => { b.autoplay = f('autoplay').checked; touch(); });
+
+    let sampleUrl = null; const sampleAudio = new Audio();
+    sampleBtn.addEventListener('click', async () => {
+      sampleBtn.disabled = true; const old = sampleBtn.textContent; sampleBtn.textContent = '…';
+      try {
+        const first = (b.script || '').trim().split(/(?<=[.!?])\s/)[0] || '';
+        const r = await ttsAudio('/api/tts/sample', { text: first.slice(0, 200), voice: b.voice, speed: b.speed || 1 });
+        if (sampleUrl) URL.revokeObjectURL(sampleUrl);
+        sampleUrl = URL.createObjectURL(await r.blob()); sampleAudio.src = sampleUrl; await sampleAudio.play();
+      } catch (e) { state.className = 'sp-state err'; state.textContent = e.message; }
+      sampleBtn.textContent = old; sampleBtn.disabled = false;
+    });
+    go.addEventListener('click', async () => {
+      busy = true; paint();
+      const key = audioKey(b);
+      try {
+        const r = await ttsAudio('/api/tts/generate', { text: b.script, voice: b.voice, speed: b.speed || 1 });
+        const j = await r.json();
+        b.asset = j.id; b.genKey = key; busy = false; live(); paint();
+      } catch (e) { busy = false; paint(); state.className = 'sp-state err'; state.textContent = e.message; }
+    });
+    box.querySelector('.sp-up').addEventListener('click', () => fi.click());
+    fi.addEventListener('change', async () => {
+      const file = fi.files && fi.files[0]; fi.value = ''; if (!file) return;
+      let type = file.type;
+      if (!AUD_TYPES.includes(type)) { const ext = (file.name.split('.').pop() || '').toLowerCase(); type = { mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', ogg: 'audio/ogg' }[ext]; }
+      if (!type) { state.className = 'sp-state err'; state.textContent = 'Use an MP3, M4A, WAV or OGG file.'; return; }
+      busy = true; paint(); state.textContent = 'Uploading…';
+      try {
+        const r = await upload(file.type === type ? file : new File([file], file.name, { type }), (p) => { state.textContent = 'Uploading ' + Math.round(p * 100) + '%'; });
+        b.asset = r.id; b.genKey = 'upload'; busy = false; live(); paint();
+      } catch (e) { busy = false; paint(); state.className = 'sp-state err'; state.textContent = e.message; }
+    });
+
+    getVoices().then((v) => {
+      const sel = f('voice');
+      if (!v.enabled) {
+        ttsOn = false;
+        sel.innerHTML = '<option value="">Unavailable</option>';
+        note.hidden = false;
+        note.innerHTML = v.reason === 'not_configured'
+          ? 'Text-to-speech isn\u2019t set up on this server yet. Ask the admin to add a <code>TTS_URL</code> (see README). You can still upload a recording.'
+          : esc(v.error || 'Text-to-speech is unavailable.') + ' <button type="button" class="linkish">Try again</button>';
+        const again = note.querySelector('button'); if (again) again.addEventListener('click', () => { getVoices(true); renderAll(); });
+        paint(); return;
+      }
+      ttsOn = true;
+      const order = ['English (UK)', 'English (US)'];
+      const groups = {};
+      v.voices.forEach((x) => { (groups[x.lang] ||= []).push(x); });
+      const langs = Object.keys(groups).sort((a, c) => (order.indexOf(a) + 1 || 99) - (order.indexOf(c) + 1 || 99) || a.localeCompare(c));
+      sel.innerHTML = langs.map((l) => `<optgroup label="${esc(l)}">${groups[l].map((x) => `<option value="${esc(x.id)}">${esc(x.name)}${x.gender ? ' · ' + x.gender.toLowerCase() : ''}</option>`).join('')}</optgroup>`).join('');
+      const ids = v.voices.map((x) => x.id);
+      if (!b.voice || !ids.includes(b.voice)) {
+        if (!b.voice) { b.voice = ids.includes('bf_emma') ? 'bf_emma' : ids[0] || ''; if (b.voice) touch(); }
+        else { sel.insertAdjacentHTML('afterbegin', `<option value="${esc(b.voice)}">${esc(b.voice)} (not on server)</option>`); }
+      }
+      sel.value = b.voice;
+      paint();
+    });
+    paint();
+    return box;
   }
 
   function mediaPicker(b) {
@@ -593,7 +716,7 @@ async function showEditor(cid) {
     btn.disabled = true; btn.textContent = 'Packing…';
     try {
       await flush();
-      const ids = [...new Set(course.cards.flatMap((c) => c.blocks).filter((b) => (b.type === 'image' || b.type === 'video') && b.asset).map((b) => b.asset))];
+      const ids = [...new Set(course.cards.flatMap((c) => c.blocks).filter((b) => (b.type === 'image' || b.type === 'video' || b.type === 'audio') && b.asset).map((b) => b.asset))];
       const M = {};
       for (const id of ids) {
         const r = await fetch(media(id)); if (!r.ok) throw new Error('media');
@@ -646,6 +769,7 @@ async function showStats(cid) {
       </div>
       <div class="panel" id="funnelP"><h3>How far people got</h3><p class="note">Share of viewers who reached each card. The biggest drops show where people stop.</p><div class="funnel" id="funnel"></div></div>
       <div class="panel"><h3>New viewers, last 30 days</h3><p class="note">First-time viewers per day.</p><div class="daily" id="daily"></div><div class="daily-ax"><span>30 days ago</span><span>Today</span></div></div>
+      <div class="panel" id="audP"><h3>Listening</h3><p class="note">How much of each recording people played. "Finished" means at least 90%.</p><div id="aud"></div></div>
       <div class="panel" id="quizP"><h3>Quiz answers</h3><p class="note">How viewers answered each question (first answer only).</p><div id="quizzes"></div></div>
       <div class="panel"><h3>Recent viewers</h3><p class="note">Anonymous. Each browser gets its own random ID.</p><div style="overflow-x:auto"><table class="recent" id="recent"></table></div></div>`;
     body.querySelector('h1').textContent = course.title || 'Untitled lesson';
@@ -677,6 +801,15 @@ async function showStats(cid) {
       d.appendChild(bar);
     });
 
+    const ad = $('#aud');
+    if (!s.audio || !s.audio.length) $('#audP').remove();
+    else s.audio.forEach((x) => {
+      const r = document.createElement('div'); r.className = 'qrow aud-row';
+      r.innerHTML = `<span class="t"></span><div class="track"><div class="fill" style="width:${x.avgPct}%"></div></div><span class="val">${x.listeners ? x.avgPct + '%' : '—'}</span>`;
+      r.querySelector('.t').textContent = `Card ${x.card + 1}: ${x.label}`;
+      tipOn(r, x.listeners ? `${x.listeners} listener${x.listeners === 1 ? '' : 's'} · average ${x.avgPct}% played · ${x.finished} finished` : 'Nobody has played this yet');
+      ad.appendChild(r);
+    });
     const qz = $('#quizzes');
     if (!s.quizzes.length) $('#quizP').remove();
     s.quizzes.forEach((qq) => {

@@ -197,3 +197,19 @@ table.users td{vertical-align:middle}
 .acts-cell{display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap}
 .note-row td{background:#fbf8f2;font-size:13px;color:#4d4842}
 .note-row code{font-family:ui-monospace,Menlo,monospace;background:#fff;border:1px solid var(--line);padding:2px 6px;border-radius:6px;margin-left:4px;user-select:all}
+
+/* speech block */
+.sp-row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+.sp-row .fld{flex:1 1 120px;margin-top:8px;max-width:none!important}
+.sp-row .fld:first-child{flex:1 1 100%}
+.sp-row .sp-sample{margin-bottom:1px;height:37px}
+select.in{appearance:auto;padding:7px 8px}
+.sp-gen{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.sp-state{font-size:12.5px;color:var(--muted)}
+.sp-state.ok{color:#16773f}.sp-state.warn{color:#8a5a00}.sp-state.err{color:#c0392b}
+.sp-preview{width:100%;height:36px;margin-top:10px}
+.sp-note{font-size:12.5px;background:#fff6e0;border:1px solid #f0dfb0;color:#6b4e00;border-radius:9px;padding:8px 10px;margin-bottom:6px;line-height:1.45}
+.sp-note code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.linkish{background:none;border:0;padding:0;font:inherit;color:var(--ink);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.adds{grid-template-columns:repeat(4,1fr)!important}
+.aud-row{grid-template-columns:minmax(160px,320px) 1fr 70px}

@@ -22,6 +22,10 @@ const ADMIN_USERNAME = (process.env.ADMIN_USERNAME || 'admin').trim().toLowerCas
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const TRUST_PROXY = process.env.TRUST_PROXY !== 'false';
 const SESSION_DAYS = 30;
+const TTS_URL = (process.env.TTS_URL || '').replace(/\/+$/, '');   // OpenAI-compatible base, e.g. http://192.168.1.10:8880/v1
+const TTS_API_KEY = process.env.TTS_API_KEY || '';
+const TTS_MODEL = process.env.TTS_MODEL || 'kokoro';
+const TTS_MAX_CHARS = 5000;
 const PUB = path.join(__dirname, 'public');
 const UPLOADS = path.join(DATA_DIR, 'uploads');
 
@@ -35,6 +39,7 @@ catch (e) {
 const MIME_OK = {
   'image/png': 1, 'image/jpeg': 1, 'image/gif': 1, 'image/webp': 1,
   'video/mp4': 1, 'video/webm': 1, 'video/quicktime': 1,
+  'audio/mpeg': 1, 'audio/mp4': 1, 'audio/x-m4a': 1, 'audio/aac': 1, 'audio/wav': 1, 'audio/x-wav': 1, 'audio/ogg': 1, 'audio/webm': 1,
 };
 
 // ---------------------------------------------------------------- database
@@ -94,6 +99,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS views_course ON views(course_id);
   CREATE INDEX IF NOT EXISTS answers_course ON answers(course_id);
+  CREATE TABLE IF NOT EXISTS listens (
+    course_id TEXT NOT NULL,
+    viewer_id TEXT NOT NULL,
+    block_id TEXT NOT NULL,
+    pct INTEGER NOT NULL DEFAULT 0,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (course_id, viewer_id, block_id)
+  );
 `);
 
 for (const col of ['created_by', 'updated_by']) {
@@ -109,6 +122,10 @@ const q = {
   deleteCourse: db.prepare('DELETE FROM courses WHERE id = ?'),
   deleteViews: db.prepare('DELETE FROM views WHERE course_id = ?'),
   deleteAnswers: db.prepare('DELETE FROM answers WHERE course_id = ?'),
+  deleteListens: db.prepare('DELETE FROM listens WHERE course_id = ?'),
+  listen: db.prepare(`INSERT INTO listens (course_id, viewer_id, block_id, pct, at) VALUES (?, ?, ?, ?, ?)
+                      ON CONFLICT(course_id, viewer_id, block_id) DO UPDATE SET pct = MAX(pct, excluded.pct), at = excluded.at`),
+  statListens: db.prepare('SELECT block_id, COUNT(*) AS n, AVG(pct) AS avg, SUM(pct >= 90) AS done FROM listens WHERE course_id = ? GROUP BY block_id'),
   summary: db.prepare(`SELECT course_id, COUNT(*) AS viewers, SUM(completed_at IS NOT NULL) AS completed
                        FROM views GROUP BY course_id`),
   insertMedia: db.prepare('INSERT INTO media (id, mime, size, created_at) VALUES (?, ?, ?, ?)'),
@@ -344,7 +361,16 @@ function courseStats(id, course) {
     const counts = (b.options || []).map((_, oi) => (byBlock[b.id] || {})[oi] || 0);
     quizzes.push({ card: ci, question: b.question || '', options: b.options || [], correct: b.correct, counts, total: counts.reduce((a, x) => a + x, 0) });
   }));
+  const listenRows = Object.fromEntries(q.statListens.all(id).map((r) => [r.block_id, r]));
+  const audio = [];
+  cards.forEach((c, ci) => (c.blocks || []).forEach((b) => {
+    if (b.type !== 'audio') return;
+    const r = listenRows[b.id] || { n: 0, avg: 0, done: 0 };
+    const firstLine = String(b.script || '').trim().split(/\n/)[0].slice(0, 90);
+    audio.push({ card: ci, label: b.title || firstLine || 'Audio', listeners: r.n, avgPct: r.n ? Math.round(r.avg) : 0, finished: r.done || 0 });
+  }));
   return {
+    audio,
     cards: n,
     viewers: viewers.length,
     visits,
@@ -407,7 +433,7 @@ async function serveMedia(req, res, id) {
 
 async function handleUpload(req, res) {
   const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-  if (!MIME_OK[mime]) return fail(res, 415, 'Unsupported file type. Use PNG, JPG, GIF, WebP, MP4, WebM or MOV.');
+  if (!MIME_OK[mime]) return fail(res, 415, 'Unsupported file type. Use PNG, JPG, GIF, WebP, MP4, WebM, MOV, MP3, M4A, WAV or OGG.');
   const declared = Number(req.headers['content-length'] || 0);
   if (declared > MAX_UPLOAD) return fail(res, 413, `File is larger than ${MAX_UPLOAD / 1048576} MB.`);
   const id = rid(16);
@@ -431,6 +457,61 @@ async function handleUpload(req, res) {
     if (e.status === 400) return fail(res, 400, 'Empty upload.');
     throw e;
   }
+}
+
+// ---------------------------------------------------------------- text-to-speech (OpenAI-compatible, e.g. Kokoro-FastAPI)
+const LANGS = { a: 'English (US)', b: 'English (UK)', e: 'Spanish', f: 'French', h: 'Hindi', i: 'Italian', j: 'Japanese', p: 'Portuguese (BR)', z: 'Chinese' };
+let voiceCache = { at: 0, list: null };
+function ttsHeaders(json = true) {
+  const h = {};
+  if (json) h['Content-Type'] = 'application/json';
+  if (TTS_API_KEY) h.Authorization = `Bearer ${TTS_API_KEY}`;
+  return h;
+}
+function describeVoice(id) {
+  const m = /^([a-z])([fm])_(.+)$/.exec(id);
+  if (!m) return { id, name: id, lang: 'Other', gender: '' };
+  const name = m[3].replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return { id, name, lang: LANGS[m[1]] || 'Other', gender: m[2] === 'f' ? 'Female' : 'Male' };
+}
+async function ttsVoices() {
+  if (!TTS_URL) return { enabled: false, reason: 'not_configured' };
+  if (voiceCache.list && now() - voiceCache.at < 10 * 60e3) return { enabled: true, voices: voiceCache.list };
+  try {
+    const r = await fetch(`${TTS_URL}/audio/voices`, { headers: ttsHeaders(false), signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    const raw = Array.isArray(j) ? j : (j.voices || []);
+    const ids = raw.map((v) => (typeof v === 'string' ? v : v.id || v.name)).filter((v) => typeof v === 'string' && /^[\w.+()-]{1,60}$/.test(v));
+    const list = ids.map(describeVoice);
+    voiceCache = { at: now(), list };
+    return { enabled: true, voices: list };
+  } catch (e) {
+    return { enabled: false, reason: 'unreachable', error: `Couldn't reach the text-to-speech server at ${TTS_URL} (${e.message}).` };
+  }
+}
+async function ttsSpeech(text, voice, speed) {
+  if (!TTS_URL) throw Object.assign(new Error('Text-to-speech is not set up (TTS_URL).'), { status: 503 });
+  const input = String(text || '').trim();
+  if (!input) throw Object.assign(new Error('Write a script first.'), { status: 400 });
+  if (input.length > TTS_MAX_CHARS) throw Object.assign(new Error(`Scripts are limited to ${TTS_MAX_CHARS} characters.`), { status: 400 });
+  if (!/^[\w.+()-]{1,60}$/.test(String(voice || ''))) throw Object.assign(new Error('Pick a voice.'), { status: 400 });
+  const sp = Math.max(0.5, Math.min(Number(speed) || 1, 2));
+  let r;
+  try {
+    r = await fetch(`${TTS_URL}/audio/speech`, {
+      method: 'POST', headers: ttsHeaders(),
+      body: JSON.stringify({ model: TTS_MODEL, input, voice, speed: sp, response_format: 'mp3' }),
+      signal: AbortSignal.timeout(180e3),
+    });
+  } catch (e) { throw Object.assign(new Error(`Couldn't reach the text-to-speech server (${e.message}).`), { status: 502 }); }
+  if (!r.ok) {
+    const detail = (await r.text().catch(() => '')).slice(0, 200);
+    throw Object.assign(new Error(`The text-to-speech server returned an error (HTTP ${r.status}). ${detail}`), { status: 502 });
+  }
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length < 100) throw Object.assign(new Error('The text-to-speech server returned no audio.'), { status: 502 });
+  return buf;
 }
 
 // ---------------------------------------------------------------- pages
@@ -501,6 +582,8 @@ async function route(req, res) {
       const i = Math.max(0, Math.min(Number(b.i) | 0, n));
       q.viewEnsure.run(cid, vid, t, t, n); // in case 'view' was lost
       q.viewProgress.run(i, n, t, i, n, t, cid, vid);
+    } else if (b.e === 'listen' && /^[a-z0-9]{4,40}$/.test(String(b.b || ''))) {
+      q.listen.run(cid, vid, String(b.b), Math.max(0, Math.min(Number(b.p) | 0, 100)), t);
     } else if (b.e === 'answer' && /^[a-z0-9]{4,40}$/.test(String(b.b || ''))) {
       q.answer.run(cid, vid, String(b.b), Math.max(0, Math.min(Number(b.a) | 0, 20)), t);
     }
@@ -599,6 +682,22 @@ async function route(req, res) {
       return fail(res, 404, 'Not found.');
     }
     if (p === '/api/media' && m === 'POST') return handleUpload(req, res);
+    if (p === '/api/tts/voices' && m === 'GET') {
+      if (url.searchParams.has('refresh')) voiceCache = { at: 0, list: null };
+      return sendJson(res, 200, await ttsVoices());
+    }
+    if ((p === '/api/tts/sample' || p === '/api/tts/generate') && m === 'POST') {
+      if (limited('tts:' + me.id, 60, 10 * 60e3)) return fail(res, 429, 'Too many requests. Wait a few minutes.');
+      const b = await readJson(req, 64 * 1024);
+      const sample = p.endsWith('sample');
+      const text = sample ? (String(b.text || '').trim().slice(0, 200) || 'Hello! This is how I sound.') : b.text;
+      const audio = await ttsSpeech(text, b.voice, b.speed);
+      if (sample) return send(res, 200, audio, { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' });
+      const id = rid(16);
+      await fsp.writeFile(path.join(UPLOADS, id), audio);
+      q.insertMedia.run(id, 'audio/mpeg', audio.length, now());
+      return sendJson(res, 201, { id, url: `/media/${id}`, size: audio.length });
+    }
 
     if (p === '/api/courses' && m === 'GET') {
       const names = nameMap();
@@ -629,7 +728,7 @@ async function route(req, res) {
         return sendJson(res, 200, { updatedAt: t });
       }
       if (!sub && m === 'DELETE') {
-        q.deleteCourse.run(id); q.deleteViews.run(id); q.deleteAnswers.run(id);
+        q.deleteCourse.run(id); q.deleteViews.run(id); q.deleteAnswers.run(id); q.deleteListens.run(id);
         collectGarbageMedia().catch((e) => console.error(e));
         return send(res, 204, '');
       }
@@ -646,7 +745,7 @@ async function route(req, res) {
         return sendJson(res, 201, { id: nid });
       }
       if (sub === 'stats' && m === 'GET') return sendJson(res, 200, courseStats(id, JSON.parse(row.data)));
-      if (sub === 'stats/reset' && m === 'POST') { q.deleteViews.run(id); q.deleteAnswers.run(id); return send(res, 204, ''); }
+      if (sub === 'stats/reset' && m === 'POST') { q.deleteViews.run(id); q.deleteAnswers.run(id); q.deleteListens.run(id); return send(res, 204, ''); }
     }
     return fail(res, 404, 'Not found.');
   }

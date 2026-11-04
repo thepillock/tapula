@@ -52,6 +52,42 @@ function block(b,media,opt){
       w.appendChild(fb);
       return w;
     }
+    case 'audio': {
+      var A=h('div','tp-aud');
+      if(!b.asset){A.appendChild(h('div','tp-ph','Audio not generated yet'));return A;}
+      var PLAY='<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" fill="currentColor"/></svg>';
+      var PAUSE='<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/><rect x="13.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/></svg>';
+      A.innerHTML='<button type="button" class="tp-aud-btn" aria-label="Play">'+PLAY+'</button><div class="tp-aud-main"><div class="tp-aud-title"></div><div class="tp-aud-bar" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"><i></i></div><div class="tp-aud-time"><span>0:00</span><span>\u2013:\u2013\u2013</span></div></div>';
+      A.querySelector('.tp-aud-title').textContent=b.title||'Listen';
+      var au=document.createElement('audio');au.src=media(b.asset);au.preload='metadata';A.appendChild(au);
+      if(b.autoplay)A.setAttribute('data-autoplay','1');
+      var btn=A.querySelector('.tp-aud-btn'),bar=A.querySelector('.tp-aud-bar'),fill=bar.firstChild,tm=A.querySelectorAll('.tp-aud-time span');
+      function mmss(t){if(!isFinite(t))return '\u2013:\u2013\u2013';t=Math.max(0,Math.round(t));return Math.floor(t/60)+':'+('0'+t%60).slice(-2);}
+      var maxPct=0,sent=0;
+      function upd(){
+        var d=au.duration,c=au.currentTime,p=d?c/d:0;
+        fill.style.width=(p*100)+'%';bar.setAttribute('aria-valuenow',Math.round(p*100));
+        tm[0].textContent=mmss(c);tm[1].textContent=mmss(d);
+        var pc=Math.round(p*100);if(pc>maxPct)maxPct=pc;
+        var step=maxPct>=98?100:Math.floor(maxPct/25)*25;
+        if(step>sent&&opt.onListen&&b.id){sent=step;opt.onListen(b.id,step);}
+      }
+      au.addEventListener('timeupdate',upd);au.addEventListener('loadedmetadata',upd);
+      au.addEventListener('play',function(){btn.innerHTML=PAUSE;btn.setAttribute('aria-label','Pause');A.classList.add('playing');});
+      au.addEventListener('pause',function(){btn.innerHTML=PLAY;btn.setAttribute('aria-label','Play');A.classList.remove('playing');});
+      au.addEventListener('ended',function(){maxPct=100;upd();});
+      btn.addEventListener('click',function(){if(au.paused){var pr=au.play();if(pr&&pr.catch)pr.catch(function(){});}else au.pause();});
+      function seek(e){var r=bar.getBoundingClientRect();var x=(e.touches?e.touches[0].clientX:e.clientX);var p=Math.max(0,Math.min(1,(x-r.left)/r.width));if(isFinite(au.duration))au.currentTime=p*au.duration;}
+      bar.addEventListener('click',seek);
+      bar.addEventListener('keydown',function(e){if(!isFinite(au.duration))return;if(e.key==='ArrowRight'){au.currentTime=Math.min(au.duration,au.currentTime+5);e.stopPropagation();e.preventDefault();}else if(e.key==='ArrowLeft'){au.currentTime=Math.max(0,au.currentTime-5);e.stopPropagation();e.preventDefault();}});
+      if(b.transcript&&b.script){
+        var tb=h('button','tp-aud-tx','Show transcript');tb.type='button';
+        var tx=h('div','tp-aud-script',fmt(b.script));tx.hidden=true;
+        tb.addEventListener('click',function(){tx.hidden=!tx.hidden;tb.textContent=tx.hidden?'Show transcript':'Hide transcript';});
+        var wrap=h('div','tp-aud-wrap');wrap.appendChild(A);wrap.appendChild(tb);wrap.appendChild(tx);return wrap;
+      }
+      return A;
+    }
     case 'link': {
       var u=safeUrl(b.url),a=h('a','tp-link',esc(b.label||'Open link')+' ↗');
       if(u){a.href=u;a.target='_blank';a.rel='noopener noreferrer';}
@@ -86,7 +122,7 @@ function play(root,course,opt){
   var cards=course.cards||[];
   var frame=h('div','tp-frame'),clip=h('div','tp-clip'),track=h('div','tp-track');
   clip.appendChild(track);frame.appendChild(clip);frame.appendChild(h('div','tp-island'));
-  var els=cards.map(function(c){return renderCard(c,{media:opt.media,accent:accent,onAnswer:opt.onAnswer});});
+  var els=cards.map(function(c){return renderCard(c,{media:opt.media,accent:accent,onAnswer:opt.onAnswer,onListen:opt.onListen});});
   var end=h('div','tp-card tp-dark tp-end');end.style.background='#16151a';
   end.innerHTML='<div class="tp-scroll"><div class="tp-inner"><div class="tp-done">✓</div><h2 class="tp-h">You’re done</h2><div class="tp-t">'+esc(course.title||'')+'</div><button type="button" class="tp-again">Start again</button></div></div>';
   els.push(end);
@@ -130,7 +166,7 @@ function play(root,course,opt){
     track.style.transition=anim===false?'none':'transform .38s cubic-bezier(.2,.8,.2,1)';
     track.style.transform='translateX('+(-100*i)+'%)';
     els.forEach(function(e,k){
-      if(k!==i)e.querySelectorAll('video').forEach(function(v){try{v.pause();}catch(_){}});
+      if(k!==i)e.querySelectorAll('video,audio').forEach(function(v){try{v.pause();}catch(_){}});
       e.setAttribute('aria-hidden',k!==i?'true':'false');
       e.inert=k!==i;
     });
@@ -138,6 +174,8 @@ function play(root,course,opt){
     frame.classList.toggle('tp-on-light',els[i].classList.contains('tp-light'));
     count.textContent=i<cards.length?(i+1)+' / '+cards.length:'';
     prev.disabled=i===0||i===N-1;next.disabled=i===N-1;
+    var ap=els[i].querySelector('.tp-aud[data-autoplay] audio');
+    if(ap&&ap.paused&&anim!==false){try{var pr=ap.play();if(pr&&pr.catch)pr.catch(function(){});}catch(_){}}
     if(opt.onChange)opt.onChange(i,cards.length,i===N-1);
   }
   prev.addEventListener('click',function(){go(i-1);});
@@ -147,7 +185,7 @@ function play(root,course,opt){
   /* ---- drag / swipe: touch events for fingers, pointer events for mouse & pen ---- */
   var sx=0,sy=0,st=0,dx=0,down=false,drag=false,moved=false;
   function dStart(x,y,target){
-    if(target&&target.closest&&target.closest('video,input,textarea,select'))return;
+    if(target&&target.closest&&target.closest('video,input,textarea,select,.tp-aud-bar'))return;
     down=true;drag=false;moved=false;sx=x;sy=y;st=Date.now();dx=0;
   }
   function dMove(x,y){

@@ -10,6 +10,13 @@ services:
       ADMIN_PASSWORD: "change-me"                 # creates the "admin" account on first run
       PUBLIC_URL: "https://learn.example.com"     # optional: used for share links / previews
       MAX_UPLOAD_MB: "100"                        # optional
+      TTS_URL: "http://kokoro:8880/v1"            # optional: text-to-speech for Speech blocks
       # TRUST_PROXY: "false"                      # set if NOT behind a reverse proxy
     volumes:
       - ./data:/data                              # Unraid: /mnt/user/appdata/tapula:/data
+
+  kokoro:                                         # optional: text-to-speech server
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: kokoro
+    restart: unless-stopped
+    # ports: ["8880:8880"]                        # only needed if something else should reach it

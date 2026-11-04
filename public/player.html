@@ -54,7 +54,8 @@
       if(i > furthest){ furthest = i; track({e:'progress', i:i}); }
       ls(KEY_P, isEnd ? null : String(i));
     },
-    onAnswer: function(blockId, choice){ track({e:'answer', b:blockId, a:choice}); }
+    onAnswer: function(blockId, choice){ track({e:'answer', b:blockId, a:choice}); },
+    onListen: function(blockId, pct){ track({e:'listen', b:blockId, p:pct}); }
   });
 
   if(start > 0){
