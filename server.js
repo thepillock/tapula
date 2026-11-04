@@ -1,0 +1,530 @@
+'use strict';
+/*
+ * Tapula — self-hosted swipeable micro-lessons.
+ * Zero dependencies: Node >= 22.13 (built-in node:sqlite).
+ */
+const http = require('node:http');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { pipeline } = require('node:stream/promises');
+const { DatabaseSync } = require('node:sqlite');
+
+// ---------------------------------------------------------------- config
+const PORT = Number(process.env.PORT) || 3000;
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
+const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+const MAX_UPLOAD = (Number(process.env.MAX_UPLOAD_MB) || 100) * 1024 * 1024;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const TRUST_PROXY = process.env.TRUST_PROXY !== 'false';
+const SESSION_DAYS = 30;
+const PUB = path.join(__dirname, 'public');
+const UPLOADS = path.join(DATA_DIR, 'uploads');
+
+if (!ADMIN_PASSWORD) {
+  console.error('ADMIN_PASSWORD is not set. Set it in the environment and restart.');
+  process.exit(1);
+}
+fs.mkdirSync(UPLOADS, { recursive: true });
+
+const secretFile = path.join(DATA_DIR, 'secret.key');
+if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+const SECRET = fs.readFileSync(secretFile, 'utf8').trim();
+
+const MIME_OK = {
+  'image/png': 1, 'image/jpeg': 1, 'image/gif': 1, 'image/webp': 1,
+  'video/mp4': 1, 'video/webm': 1, 'video/quicktime': 1,
+};
+
+// ---------------------------------------------------------------- database
+const db = new DatabaseSync(path.join(DATA_DIR, 'tapula.db'));
+db.exec(`
+  PRAGMA journal_mode = WAL;
+  PRAGMA foreign_keys = ON;
+  CREATE TABLE IF NOT EXISTS courses (
+    id TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    published INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS media (
+    id TEXT PRIMARY KEY,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS views (
+    course_id TEXT NOT NULL,
+    viewer_id TEXT NOT NULL,
+    first_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL,
+    visits INTEGER NOT NULL DEFAULT 1,
+    furthest INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    completed_at INTEGER,
+    PRIMARY KEY (course_id, viewer_id)
+  );
+  CREATE TABLE IF NOT EXISTS answers (
+    course_id TEXT NOT NULL,
+    viewer_id TEXT NOT NULL,
+    block_id TEXT NOT NULL,
+    choice INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (course_id, viewer_id, block_id)
+  );
+  CREATE INDEX IF NOT EXISTS views_course ON views(course_id);
+  CREATE INDEX IF NOT EXISTS answers_course ON answers(course_id);
+`);
+
+const q = {
+  listCourses: db.prepare('SELECT id, data, published, created_at, updated_at FROM courses ORDER BY updated_at DESC'),
+  getCourse: db.prepare('SELECT id, data, published, created_at, updated_at FROM courses WHERE id = ?'),
+  insertCourse: db.prepare('INSERT INTO courses (id, data, published, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'),
+  updateCourse: db.prepare('UPDATE courses SET data = ?, updated_at = ? WHERE id = ?'),
+  publishCourse: db.prepare('UPDATE courses SET published = ?, updated_at = ? WHERE id = ?'),
+  deleteCourse: db.prepare('DELETE FROM courses WHERE id = ?'),
+  deleteViews: db.prepare('DELETE FROM views WHERE course_id = ?'),
+  deleteAnswers: db.prepare('DELETE FROM answers WHERE course_id = ?'),
+  summary: db.prepare(`SELECT course_id, COUNT(*) AS viewers, SUM(completed_at IS NOT NULL) AS completed
+                       FROM views GROUP BY course_id`),
+  insertMedia: db.prepare('INSERT INTO media (id, mime, size, created_at) VALUES (?, ?, ?, ?)'),
+  getMedia: db.prepare('SELECT id, mime, size FROM media WHERE id = ?'),
+  allMedia: db.prepare('SELECT id, created_at FROM media'),
+  deleteMedia: db.prepare('DELETE FROM media WHERE id = ?'),
+  viewStart: db.prepare(`INSERT INTO views (course_id, viewer_id, first_at, last_at, visits, furthest, total)
+                         VALUES (?, ?, ?, ?, 1, 0, ?)
+                         ON CONFLICT(course_id, viewer_id) DO UPDATE SET visits = visits + 1, last_at = excluded.last_at`),
+  viewEnsure: db.prepare(`INSERT INTO views (course_id, viewer_id, first_at, last_at, visits, furthest, total)
+                          VALUES (?, ?, ?, ?, 1, 0, ?) ON CONFLICT(course_id, viewer_id) DO NOTHING`),
+  viewProgress: db.prepare(`UPDATE views SET furthest = MAX(furthest, ?), total = ?, last_at = ?,
+                            completed_at = CASE WHEN ? >= ? AND completed_at IS NULL THEN ? ELSE completed_at END
+                            WHERE course_id = ? AND viewer_id = ?`),
+  answer: db.prepare('INSERT OR IGNORE INTO answers (course_id, viewer_id, block_id, choice, at) VALUES (?, ?, ?, ?, ?)'),
+  statViewers: db.prepare('SELECT viewer_id, first_at, last_at, visits, furthest, total, completed_at FROM views WHERE course_id = ? ORDER BY last_at DESC'),
+  statAnswers: db.prepare('SELECT block_id, choice, COUNT(*) AS n FROM answers WHERE course_id = ? GROUP BY block_id, choice'),
+};
+
+// ---------------------------------------------------------------- helpers
+const rid = (n = 10) => {
+  const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
+  return Array.from(crypto.randomBytes(n), (b) => abc[b % abc.length]).join('');
+};
+const ID_RE = /^[a-z0-9]{4,40}$/;
+const now = () => Date.now();
+const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const jsonForHtml = (o) => JSON.stringify(o).replace(/</g, '\\u003c').split('\u2028').join('\\u2028').split('\u2029').join('\\u2029');
+
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const xf = req.headers['x-forwarded-for'];
+    if (xf) return String(xf).split(',')[0].trim();
+    if (req.headers['x-real-ip']) return String(req.headers['x-real-ip']);
+  }
+  return req.socket.remoteAddress || '';
+}
+function isHttps(req) {
+  return TRUST_PROXY ? String(req.headers['x-forwarded-proto'] || '').includes('https') : !!req.socket.encrypted;
+}
+function baseUrl(req) {
+  if (PUBLIC_URL) return PUBLIC_URL;
+  const host = (TRUST_PROXY && req.headers['x-forwarded-host']) || req.headers.host || `localhost:${PORT}`;
+  return `${isHttps(req) ? 'https' : 'http'}://${host}`;
+}
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+  'X-Frame-Options': 'SAMEORIGIN',
+};
+function send(res, status, body, headers = {}) {
+  res.writeHead(status, { ...SECURITY_HEADERS, ...headers });
+  res.end(body);
+}
+function sendJson(res, status, obj) {
+  send(res, status, JSON.stringify(obj), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+}
+const fail = (res, status, error) => sendJson(res, status, { error });
+
+async function readJson(req, limit = 4 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const c of req) {
+    size += c.length;
+    if (size > limit) throw Object.assign(new Error('Body too large'), { status: 413 });
+    chunks.push(c);
+  }
+  if (!size) return {};
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw Object.assign(new Error('Invalid JSON'), { status: 400 }); }
+}
+
+// simple per-key rate limiter
+const buckets = new Map();
+function limited(key, max, windowMs) {
+  const t = now();
+  let b = buckets.get(key);
+  if (!b || t - b.start > windowMs) { b = { start: t, n: 0 }; buckets.set(key, b); }
+  b.n++;
+  return b.n > max;
+}
+setInterval(() => { const t = now(); for (const [k, b] of buckets) if (t - b.start > 3600e3) buckets.delete(k); }, 600e3).unref();
+
+// ---------------------------------------------------------------- auth
+const pwDigest = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
+function sign(v) {
+  return crypto.createHmac('sha256', SECRET).update(v).update(pwDigest).digest('base64url');
+}
+function makeSession() {
+  const exp = now() + SESSION_DAYS * 864e5;
+  return `${exp}.${sign(String(exp))}`;
+}
+function parseCookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+function authed(req) {
+  const tok = parseCookies(req).tapula_session;
+  if (!tok) return false;
+  const [exp, sig] = tok.split('.');
+  if (!exp || !sig || Number(exp) < now()) return false;
+  const good = Buffer.from(sign(exp));
+  const got = Buffer.from(sig);
+  return good.length === got.length && crypto.timingSafeEqual(good, got);
+}
+function cookie(req, value, maxAge) {
+  return `tapula_session=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${isHttps(req) ? '; Secure' : ''}`;
+}
+function checkPassword(pw) {
+  const a = crypto.createHash('sha256').update(String(pw || '')).digest();
+  return crypto.timingSafeEqual(a, pwDigest);
+}
+
+// ---------------------------------------------------------------- courses
+function rowToCourse(row) {
+  const data = JSON.parse(row.data);
+  return { id: row.id, published: !!row.published, createdAt: row.created_at, updatedAt: row.updated_at, ...data };
+}
+function sanitizeCourse(body) {
+  const title = String(body.title ?? '').slice(0, 200);
+  const accent = /^#[0-9a-fA-F]{6}$/.test(body.accent || '') ? body.accent : '#ff5a36';
+  const cards = Array.isArray(body.cards) ? body.cards.slice(0, 200) : [];
+  return { title, accent, cards };
+}
+function templateCourse() {
+  return {
+    title: 'Untitled lesson',
+    accent: '#ff5a36',
+    cards: [
+      { id: rid(), bg: '#fff4e6', blocks: [
+        { id: rid(), type: 'heading', text: 'Welcome!' },
+        { id: rid(), type: 'text', text: 'This is your first card. Add text, images, video or a quick quiz from the panel on the right.' },
+      ] },
+      { id: rid(), bg: '#17161b', blocks: [
+        { id: rid(), type: 'quiz', question: 'Ready to start?', options: ['Yes', 'Absolutely'], correct: -1, explain: '' },
+      ] },
+    ],
+  };
+}
+function mediaIdsIn(course) {
+  const ids = new Set();
+  for (const c of course.cards || []) for (const b of c.blocks || []) if (b && b.asset) ids.add(String(b.asset));
+  return ids;
+}
+async function collectGarbageMedia() {
+  const used = new Set();
+  for (const row of q.listCourses.all()) for (const id of mediaIdsIn(JSON.parse(row.data))) used.add(id);
+  const cutoff = now() - 24 * 3600e3; // keep fresh uploads that haven't been saved into a lesson yet
+  let removed = 0;
+  for (const m of q.allMedia.all()) {
+    if (used.has(m.id) || m.created_at > cutoff) continue;
+    q.deleteMedia.run(m.id);
+    await fsp.rm(path.join(UPLOADS, m.id), { force: true });
+    removed++;
+  }
+  if (removed) console.log(`Removed ${removed} unused media file(s)`);
+}
+
+function courseStats(id, course) {
+  const viewers = q.statViewers.all(id);
+  const cards = course.cards || [];
+  const n = cards.length;
+  const reach = new Array(n).fill(0);
+  let completed = 0, visits = 0, progressSum = 0;
+  const day = 864e5;
+  const today = Math.floor(now() / day);
+  const daily = new Array(30).fill(0);
+  for (const v of viewers) {
+    visits += v.visits;
+    if (v.completed_at) completed++;
+    const f = Math.min(v.furthest, n); // index n == finished
+    for (let k = 0; k <= Math.min(f, n - 1); k++) reach[k]++;
+    progressSum += n ? (v.completed_at ? 1 : Math.min(f + 1, n) / n) : 0;
+    const d = today - Math.floor(v.first_at / day);
+    if (d >= 0 && d < 30) daily[29 - d]++;
+  }
+  const answerRows = q.statAnswers.all(id);
+  const byBlock = {};
+  for (const r of answerRows) (byBlock[r.block_id] ||= {})[r.choice] = r.n;
+  const quizzes = [];
+  cards.forEach((c, ci) => (c.blocks || []).forEach((b) => {
+    if (b.type !== 'quiz') return;
+    const counts = (b.options || []).map((_, oi) => (byBlock[b.id] || {})[oi] || 0);
+    quizzes.push({ card: ci, question: b.question || '', options: b.options || [], correct: b.correct, counts, total: counts.reduce((a, x) => a + x, 0) });
+  }));
+  return {
+    cards: n,
+    viewers: viewers.length,
+    visits,
+    completed,
+    completionRate: viewers.length ? completed / viewers.length : 0,
+    avgProgress: viewers.length ? progressSum / viewers.length : 0,
+    reach,
+    daily,
+    quizzes,
+    recent: viewers.slice(0, 25).map((v) => ({
+      viewer: v.viewer_id.slice(0, 6), firstAt: v.first_at, lastAt: v.last_at, visits: v.visits,
+      furthest: Math.min(v.furthest, n), total: v.total || n, completed: !!v.completed_at,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------- static files
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
+const fileCache = new Map();
+async function readPublic(name) {
+  if (process.env.NODE_ENV === 'production' && fileCache.has(name)) return fileCache.get(name);
+  const txt = await fsp.readFile(path.join(PUB, name), 'utf8');
+  fileCache.set(name, txt);
+  return txt;
+}
+async function serveStatic(req, res, rel) {
+  const file = path.normalize(path.join(PUB, rel));
+  if (!file.startsWith(PUB + path.sep)) return fail(res, 404, 'Not found');
+  try {
+    const st = await fsp.stat(file);
+    if (!st.isFile()) throw new Error();
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Content-Length': st.size, 'Cache-Control': 'no-cache' });
+    if (req.method === 'HEAD') return res.end();
+    fs.createReadStream(file).pipe(res);
+  } catch { fail(res, 404, 'Not found'); }
+}
+
+async function serveMedia(req, res, id) {
+  const m = ID_RE.test(id) && q.getMedia.get(id);
+  if (!m) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
+  const file = path.join(UPLOADS, m.id);
+  let size;
+  try { size = (await fsp.stat(file)).size; } catch { return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' }); }
+  const headers = { ...SECURITY_HEADERS, 'Content-Type': m.mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=31536000, immutable', 'Content-Disposition': 'inline' };
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (range && (range[1] || range[2])) {
+    let start = range[1] ? Number(range[1]) : size - Number(range[2]);
+    let end = range[1] && range[2] ? Number(range[2]) : size - 1;
+    if (start < 0) start = 0;
+    if (end >= size) end = size - 1;
+    if (start > end || start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end(); }
+    res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': end - start + 1 });
+    if (req.method === 'HEAD') return res.end();
+    return fs.createReadStream(file, { start, end }).pipe(res);
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': size });
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(file).pipe(res);
+}
+
+async function handleUpload(req, res) {
+  const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (!MIME_OK[mime]) return fail(res, 415, 'Unsupported file type. Use PNG, JPG, GIF, WebP, MP4, WebM or MOV.');
+  const declared = Number(req.headers['content-length'] || 0);
+  if (declared > MAX_UPLOAD) return fail(res, 413, `File is larger than ${MAX_UPLOAD / 1048576} MB.`);
+  const id = rid(16);
+  const tmp = path.join(UPLOADS, `${id}.part`);
+  let size = 0;
+  try {
+    await pipeline(req, async function* (src) {
+      for await (const chunk of src) {
+        size += chunk.length;
+        if (size > MAX_UPLOAD) throw Object.assign(new Error('too large'), { status: 413 });
+        yield chunk;
+      }
+    }, fs.createWriteStream(tmp));
+    if (!size) throw Object.assign(new Error('empty'), { status: 400 });
+    await fsp.rename(tmp, path.join(UPLOADS, id));
+    q.insertMedia.run(id, mime, size, now());
+    sendJson(res, 201, { id, url: `/media/${id}`, size, mime });
+  } catch (e) {
+    await fsp.rm(tmp, { force: true });
+    if (e.status === 413) return fail(res, 413, `File is larger than ${MAX_UPLOAD / 1048576} MB.`);
+    if (e.status === 400) return fail(res, 400, 'Empty upload.');
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------- pages
+async function renderPlayer(req, res, row, preview) {
+  const course = rowToCourse(row);
+  const tpl = await readPublic('player.html');
+  const firstImg = (course.cards || []).flatMap((c) => c.blocks || []).find((b) => b.type === 'image' && b.asset);
+  const firstText = (course.cards || []).flatMap((c) => c.blocks || []).find((b) => b.type === 'text' && b.text);
+  const desc = firstText ? String(firstText.text).replace(/\*\*/g, '').slice(0, 180) : `${(course.cards || []).length} cards · swipe to learn`;
+  const base = baseUrl(req);
+  const meta = [
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:title" content="${escHtml(course.title || 'Lesson')}">`,
+    `<meta property="og:description" content="${escHtml(desc)}">`,
+    `<meta name="description" content="${escHtml(desc)}">`,
+    `<meta property="og:url" content="${escHtml(`${base}/l/${course.id}`)}">`,
+    firstImg ? `<meta property="og:image" content="${escHtml(`${base}/media/${firstImg.asset}`)}">` : '',
+    preview ? '<meta name="robots" content="noindex">' : '',
+  ].join('\n');
+  const publicCourse = { id: course.id, title: course.title, accent: course.accent, cards: course.cards };
+  const html = tpl
+    .replace('{{TITLE}}', escHtml(course.title || 'Lesson'))
+    .replace('{{META}}', meta)
+    .replace('{{DATA}}', jsonForHtml({ course: publicCourse, preview: !!preview }));
+  send(res, 200, html, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'",
+  });
+}
+async function sendPage(res, name, status = 200) {
+  send(res, status, await readPublic(name), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+}
+async function notFoundPage(res) {
+  const tpl = await readPublic('message.html');
+  send(res, 404, tpl.replace('{{TITLE}}', 'Lesson not found').replace('{{BODY}}', 'This link may be wrong, or the lesson is no longer available.'), { 'Content-Type': 'text/html; charset=utf-8' });
+}
+
+// ---------------------------------------------------------------- router
+async function route(req, res) {
+  const url = new URL(req.url, 'http://x');
+  const p = url.pathname;
+  const m = req.method;
+
+  // --- public
+  if (p === '/healthz') return send(res, 200, 'ok', { 'Content-Type': 'text/plain' });
+  if (p === '/' ) return send(res, 302, '', { Location: '/admin' });
+  if (p.startsWith('/static/') && (m === 'GET' || m === 'HEAD')) return serveStatic(req, res, p.slice(8));
+  if (p.startsWith('/media/') && (m === 'GET' || m === 'HEAD')) return serveMedia(req, res, p.slice(7));
+  let mm;
+  if ((mm = /^\/l\/([a-z0-9]+)\/?$/.exec(p)) && m === 'GET') {
+    const row = q.getCourse.get(mm[1]);
+    const preview = url.searchParams.has('preview') && authed(req);
+    if (!row || (!row.published && !preview)) return notFoundPage(res);
+    return renderPlayer(req, res, row, preview);
+  }
+  if (p === '/api/track' && m === 'POST') {
+    if (limited('t:' + clientIp(req), 240, 60e3)) return send(res, 429, '');
+    const b = await readJson(req, 4096);
+    const cid = String(b.c || ''), vid = String(b.v || '');
+    if (!ID_RE.test(cid) || !/^[a-z0-9]{8,40}$/.test(vid)) return send(res, 204, '');
+    const row = q.getCourse.get(cid);
+    if (!row || !row.published) return send(res, 204, '');
+    const t = now();
+    const n = (JSON.parse(row.data).cards || []).length;
+    if (b.e === 'view') q.viewStart.run(cid, vid, t, t, n);
+    else if (b.e === 'progress') {
+      const i = Math.max(0, Math.min(Number(b.i) | 0, n));
+      q.viewEnsure.run(cid, vid, t, t, n); // in case 'view' was lost
+      q.viewProgress.run(i, n, t, i, n, t, cid, vid);
+    } else if (b.e === 'answer' && /^[a-z0-9]{4,40}$/.test(String(b.b || ''))) {
+      q.answer.run(cid, vid, String(b.b), Math.max(0, Math.min(Number(b.a) | 0, 20)), t);
+    }
+    return send(res, 204, '');
+  }
+
+  // --- auth
+  if (p === '/login' && m === 'GET') return authed(req) ? send(res, 302, '', { Location: '/admin' }) : sendPage(res, 'login.html');
+  if (p === '/api/login' && m === 'POST') {
+    if (limited('l:' + clientIp(req), 8, 15 * 60e3)) return fail(res, 429, 'Too many attempts. Try again in a few minutes.');
+    const b = await readJson(req, 4096);
+    if (!checkPassword(b.password)) { await new Promise((r) => setTimeout(r, 400)); return fail(res, 401, 'Wrong password.'); }
+    return send(res, 204, '', { 'Set-Cookie': cookie(req, makeSession(), SESSION_DAYS * 86400) });
+  }
+  if (p === '/api/logout' && m === 'POST') return send(res, 204, '', { 'Set-Cookie': cookie(req, '', 0) });
+
+  // --- admin pages
+  if (p === '/admin' || p.startsWith('/admin/')) {
+    if (!authed(req)) return send(res, 302, '', { Location: '/login' });
+    return sendPage(res, 'admin.html');
+  }
+
+  // --- admin API (session + CSRF header)
+  if (p.startsWith('/api/')) {
+    if (!authed(req)) return fail(res, 401, 'Not signed in.');
+    if (m !== 'GET' && m !== 'HEAD' && req.headers['x-tapula'] !== '1') return fail(res, 403, 'Missing request header.');
+
+    if (p === '/api/config' && m === 'GET') return sendJson(res, 200, { baseUrl: baseUrl(req), maxUploadMb: MAX_UPLOAD / 1048576 });
+    if (p === '/api/media' && m === 'POST') return handleUpload(req, res);
+
+    if (p === '/api/courses' && m === 'GET') {
+      const sums = Object.fromEntries(q.summary.all().map((r) => [r.course_id, r]));
+      return sendJson(res, 200, q.listCourses.all().map((r) => {
+        const c = rowToCourse(r);
+        const s = sums[c.id] || { viewers: 0, completed: 0 };
+        return { id: c.id, title: c.title, accent: c.accent, published: c.published, updatedAt: c.updatedAt, cardCount: (c.cards || []).length, firstCard: (c.cards || [])[0] || null, viewers: s.viewers, completed: s.completed || 0 };
+      }));
+    }
+    if (p === '/api/courses' && m === 'POST') {
+      const id = rid(); const t = now();
+      q.insertCourse.run(id, JSON.stringify(templateCourse()), 0, t, t);
+      return sendJson(res, 201, { id });
+    }
+    if ((mm = /^\/api\/courses\/([a-z0-9]+)(?:\/(publish|duplicate|stats|stats\/reset))?$/.exec(p))) {
+      const id = mm[1], sub = mm[2];
+      const row = q.getCourse.get(id);
+      if (!row) return fail(res, 404, 'Lesson not found.');
+      if (!sub && m === 'GET') return sendJson(res, 200, rowToCourse(row));
+      if (!sub && m === 'PUT') {
+        const clean = sanitizeCourse(await readJson(req));
+        const t = now();
+        q.updateCourse.run(JSON.stringify(clean), t, id);
+        return sendJson(res, 200, { updatedAt: t });
+      }
+      if (!sub && m === 'DELETE') {
+        q.deleteCourse.run(id); q.deleteViews.run(id); q.deleteAnswers.run(id);
+        collectGarbageMedia().catch((e) => console.error(e));
+        return send(res, 204, '');
+      }
+      if (sub === 'publish' && m === 'POST') {
+        const b = await readJson(req, 1024);
+        q.publishCourse.run(b.published ? 1 : 0, now(), id);
+        return sendJson(res, 200, { published: !!b.published });
+      }
+      if (sub === 'duplicate' && m === 'POST') {
+        const data = JSON.parse(row.data);
+        data.title = `${data.title || 'Untitled'} (copy)`;
+        const nid = rid(); const t = now();
+        q.insertCourse.run(nid, JSON.stringify(data), 0, t, t);
+        return sendJson(res, 201, { id: nid });
+      }
+      if (sub === 'stats' && m === 'GET') return sendJson(res, 200, courseStats(id, JSON.parse(row.data)));
+      if (sub === 'stats/reset' && m === 'POST') { q.deleteViews.run(id); q.deleteAnswers.run(id); return send(res, 204, ''); }
+    }
+    return fail(res, 404, 'Not found.');
+  }
+  return notFoundPage(res);
+}
+
+const server = http.createServer((req, res) => {
+  route(req, res).catch((e) => {
+    if (e && e.status) return fail(res, e.status, e.message);
+    console.error(e);
+    if (!res.headersSent) fail(res, 500, 'Server error.');
+    else res.destroy();
+  });
+});
+server.requestTimeout = 0; // allow long video uploads on slow links
+server.headersTimeout = 60e3;
+server.listen(PORT, () => {
+  console.log(`Tapula listening on :${PORT}  (data: ${DATA_DIR})`);
+  collectGarbageMedia().catch((e) => console.error(e));
+});
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { server.close(); db.close(); process.exit(0); });

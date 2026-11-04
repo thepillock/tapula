@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d0c10">
+<title>{{TITLE}}</title>
+{{META}}
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/player.css">
+<style>
+  html,body{margin:0;height:100%;background:#0d0c10;overscroll-behavior:none}
+  .resume{position:fixed;left:50%;bottom:calc(150px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:10;display:flex;gap:10px;align-items:center;background:rgba(20,19,24,.92);color:#fff;font:600 13px Inter,system-ui,sans-serif;padding:8px 8px 8px 16px;border-radius:999px;box-shadow:0 10px 30px rgba(0,0,0,.35);transition:opacity .4s}
+  .resume button{font:inherit;border:0;border-radius:999px;padding:7px 12px;background:#fff;color:#16151a;cursor:pointer}
+  .resume.gone{opacity:0;pointer-events:none}
+  .preview-flag{position:fixed;top:10px;left:10px;z-index:10;background:#ffd84d;color:#16151a;font:700 11px Inter,sans-serif;letter-spacing:.06em;text-transform:uppercase;padding:5px 9px;border-radius:6px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>window.__TAPULA__ = {{DATA}};</script>
+<script src="/static/player.js"></script>
+<script>
+(function(){
+  var D = window.__TAPULA__, C = D.course, preview = D.preview;
+  var KEY_V = 'tapula_viewer', KEY_P = 'tapula_pos_' + C.id;
+  function rand(){ var a='abcdefghijkmnpqrstuvwxyz23456789',s='',r=new Uint8Array(16); crypto.getRandomValues(r); for(var i=0;i<16;i++)s+=a[r[i]%32]; return s; }
+  function ls(k,v){ try{ if(v===undefined) return localStorage.getItem(k); if(v===null) localStorage.removeItem(k); else localStorage.setItem(k,v); }catch(e){ return null; } }
+  var viewer = ls(KEY_V); if(!viewer || !/^[a-z0-9]{8,40}$/.test(viewer)){ viewer = rand(); ls(KEY_V, viewer); }
+
+  function track(o){
+    if(preview) return;
+    o.c = C.id; o.v = viewer;
+    var body = JSON.stringify(o);
+    try{
+      if(navigator.sendBeacon && navigator.sendBeacon('/api/track', new Blob([body],{type:'application/json'}))) return;
+    }catch(e){}
+    fetch('/api/track',{method:'POST',headers:{'Content-Type':'application/json'},body:body,keepalive:true}).catch(function(){});
+  }
+
+  var n = (C.cards||[]).length;
+  var saved = parseInt(ls(KEY_P)||'0',10);
+  var start = (saved>0 && saved<n) ? saved : 0;
+  var furthest = -1;
+
+  track({e:'view'});
+  var player = TapPlayer.play(document.getElementById('root'), C, {
+    media: function(id){ return '/media/' + id; },
+    start: start,
+    onChange: function(i, count, isEnd){
+      if(i > furthest){ furthest = i; track({e:'progress', i:i}); }
+      ls(KEY_P, isEnd ? null : String(i));
+    },
+    onAnswer: function(blockId, choice){ track({e:'answer', b:blockId, a:choice}); }
+  });
+
+  if(start > 0){
+    var r = document.createElement('div'); r.className='resume';
+    r.innerHTML = '<span>Picked up at card '+(start+1)+'</span><button type="button">Start over</button>';
+    r.querySelector('button').onclick = function(){ player.go(0); r.classList.add('gone'); };
+    document.body.appendChild(r);
+    setTimeout(function(){ r.classList.add('gone'); }, 6000);
+  }
+  if(preview){ var f=document.createElement('div'); f.className='preview-flag'; f.textContent='Preview · not tracked'; document.body.appendChild(f); }
+})();
+</script>
+</body>
+</html>

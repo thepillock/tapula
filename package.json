@@ -1,0 +1,15 @@
+{
+  "name": "tapula",
+  "version": "0.1.0",
+  "description": "Self-hosted swipeable micro-lessons: card editor, shareable links, viewer stats",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "dev": "ADMIN_PASSWORD=dev node --disable-warning=ExperimentalWarning --watch server.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "UNLICENSED"
+}

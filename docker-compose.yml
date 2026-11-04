@@ -1,0 +1,15 @@
+services:
+  tapula:
+    build: .
+    image: tapula:latest
+    container_name: tapula
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      ADMIN_PASSWORD: "change-me"                 # required
+      PUBLIC_URL: "https://learn.example.com"     # optional: used for share links / previews
+      MAX_UPLOAD_MB: "100"                        # optional
+      # TRUST_PROXY: "false"                      # set if NOT behind a reverse proxy
+    volumes:
+      - ./data:/data                              # Unraid: /mnt/user/appdata/tapula:/data
