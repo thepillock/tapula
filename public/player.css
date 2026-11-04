@@ -110,3 +110,35 @@
 .tp-aud-time{display:flex;justify-content:space-between;font-size:12px;opacity:.65;margin-top:7px;font-variant-numeric:tabular-nums}
 .tp-aud-tx{margin-top:10px;background:none;border:0;color:inherit;font:600 13px Inter,system-ui,sans-serif;opacity:.75;cursor:pointer;padding:4px 0;text-decoration:underline;text-underline-offset:3px}
 .tp-aud-script{margin-top:8px;font-size:15px;line-height:1.55;opacity:.9}
+/* photo cards: overlays, text shadow, solid panels */
+.tp-shade-dark{background:rgba(0,0,0,.52)}
+.tp-shade-light{background:rgba(255,255,255,.62)}
+.tp-shadow.tp-dark .tp-h,.tp-shadow.tp-dark .tp-t,.tp-shadow.tp-dark .tp-q,.tp-shadow.tp-dark figcaption,.tp-shadow.tp-dark .tp-aud-tx,.tp-shadow.tp-dark .tp-aud-script,.tp-shadow.tp-dark .tp-req{text-shadow:0 1px 2px rgba(0,0,0,.75),0 0 14px rgba(0,0,0,.55),0 0 2px rgba(0,0,0,.9)}
+.tp-shadow.tp-light .tp-h,.tp-shadow.tp-light .tp-t,.tp-shadow.tp-light .tp-q,.tp-shadow.tp-light figcaption,.tp-shadow.tp-light .tp-aud-tx,.tp-shadow.tp-light .tp-aud-script,.tp-shadow.tp-light .tp-req{text-shadow:0 0 2px #fff,0 0 10px rgba(255,255,255,.95),0 0 18px rgba(255,255,255,.8)}
+.tp-has-bg .tp-quiz{padding:18px;border-radius:20px;-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.tp-has-bg.tp-dark .tp-quiz{background:rgba(18,17,22,.78);color:#fff}
+.tp-has-bg.tp-light .tp-quiz{background:rgba(255,255,255,.9);color:#17161b}
+.tp-has-bg .tp-quiz .tp-q{text-shadow:none!important}
+.tp-has-bg.tp-dark .tp-aud{background:rgba(18,17,22,.78);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+.tp-has-bg.tp-light .tp-aud{background:rgba(255,255,255,.92)}
+.tp-light .tp-opt{background:rgba(255,255,255,.92)}
+.tp-dark .tp-opt{background:rgba(255,255,255,.1)}
+/* quiz: required + changeable */
+.tp-req{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;opacity:.6;margin-top:6px}
+.tp-quiz.answered .tp-req{display:none}
+.tp-quiz.changeable .tp-opt{cursor:pointer}
+.tp-quiz.answered.changeable .tp-opt:not(.right):not(.wrong):not(.picked){opacity:.8}
+@keyframes tp-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(7px)}60%{transform:translateX(-5px)}80%{transform:translateX(3px)}}
+.tp-shake{animation:tp-shake .45s ease}
+.tp-btn.tp-next.tp-locked{opacity:.45}
+.tp-toast{position:absolute;left:50%;bottom:92px;transform:translate(-50%,10px);z-index:7;background:rgba(20,19,24,.92);color:#fff;font:600 13px Inter,system-ui,sans-serif;padding:9px 14px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;white-space:nowrap}
+.tp-toast.show{opacity:1;transform:translate(-50%,0)}
+.tp-sheet-small{font-size:13px;color:#77716a}
+/* clickable progress segments */
+.tp-seg{position:relative}
+.tp-seg.reach{pointer-events:auto;cursor:pointer}
+.tp-seg.reach::before{content:"";position:absolute;left:0;right:0;top:-12px;bottom:-12px}
+.tp-seg{overflow:visible}
+.tp-seg i{border-radius:3px}
+.tp-seg.reach:hover{background:rgba(255,255,255,.6)}
+.tp-on-light .tp-seg.reach:hover{background:rgba(0,0,0,.3)}

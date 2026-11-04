@@ -85,7 +85,7 @@ function thumb(card, accent, w) {
 function twoStep(btn, label, fn) {
   let armed = false, t = null;
   btn.addEventListener('click', () => {
-    if (!armed) { armed = true; btn.textContent = 'Sure?'; btn.classList.add('armed'); t = setTimeout(() => { armed = false; btn.textContent = label; btn.classList.remove('armed'); }, 3000); return; }
+    if (!armed) { armed = true; btn.textContent = btn.classList.contains('ib') ? 'Delete?' : 'Sure?'; btn.classList.add('armed'); t = setTimeout(() => { armed = false; btn.textContent = label; btn.classList.remove('armed'); }, 3000); return; }
     clearTimeout(t); armed = false; btn.classList.remove('armed'); btn.textContent = label; fn();
   });
 }
@@ -418,8 +418,30 @@ async function showEditor(cid) {
     const ins = $('#insp'); const scroll = ins.scrollTop; ins.innerHTML = '';
     const card = course.cards[sel]; if (!card) return;
 
-    const cs = section('Card ' + (sel + 1) + ' background');
+    const cs = section('Card ' + (sel + 1) + ' style');
+    const bgl = document.createElement('div'); bgl.className = 'sub-l'; bgl.textContent = 'Background'; cs.appendChild(bgl);
     cs.appendChild(swatchRow(SWATCHES, card.bg, (col) => { card.bg = col; live(); }));
+    const hasFill = card.blocks.some((b) => b.type === 'image' && b.fill && b.asset);
+    const segCtl = (label, options, value, on) => {
+      const wrap = document.createElement('div'); wrap.className = 'ctl';
+      wrap.innerHTML = `<div class="sub-l">${esc(label)}</div><div class="seg" role="radiogroup"></div>`;
+      const g = wrap.querySelector('.seg');
+      options.forEach(([v, l]) => {
+        const bt = document.createElement('button'); bt.type = 'button'; bt.textContent = l; bt.setAttribute('role', 'radio');
+        const set = () => g.querySelectorAll('button').forEach((x) => { x.classList.toggle('on', x === bt); x.setAttribute('aria-checked', x === bt); });
+        if (v === value) set();
+        bt.addEventListener('click', () => { set(); on(v); });
+        g.appendChild(bt);
+      });
+      return wrap;
+    };
+    cs.appendChild(segCtl('Text colour', [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], card.text || 'auto', (v) => { card.text = v === 'auto' ? undefined : v; live(); }));
+    if (hasFill) cs.appendChild(segCtl('Photo overlay', [['auto', 'Gradient'], ['dark', 'Darken'], ['light', 'Lighten'], ['none', 'None']], card.overlay || 'auto', (v) => { card.overlay = v === 'auto' ? undefined : v; live(); }));
+    const sh = document.createElement('label'); sh.className = 'chk';
+    sh.innerHTML = '<input type="checkbox"> Text shadow <span class="muted">(helps text stand out on photos)</span>';
+    const shc = sh.querySelector('input'); shc.checked = !!card.shadow;
+    shc.addEventListener('change', () => { card.shadow = shc.checked || undefined; live(); });
+    cs.appendChild(sh);
     const acts = document.createElement('div'); acts.className = 'row card-acts';
     acts.innerHTML = `<button class="btn sm" data-a="up" ${sel === 0 ? 'disabled' : ''}>↑ Move</button><button class="btn sm" data-a="down" ${sel === course.cards.length - 1 ? 'disabled' : ''}>↓ Move</button><button class="btn sm" data-a="dup">Duplicate</button><button class="btn sm danger" data-a="del" ${course.cards.length < 2 ? 'disabled' : ''}>Delete</button>`;
     acts.querySelector('[data-a=up]').addEventListener('click', () => { const [m] = course.cards.splice(sel, 1); course.cards.splice(sel - 1, 0, m); sel--; touch(); renderAll(); });
@@ -509,6 +531,10 @@ async function showEditor(cid) {
         nc.addEventListener('change', () => { b.correct = nc.checked ? -1 : 0; touch(); renderAll(); });
         row.append(add, none); ol.appendChild(row);
         w.appendChild(ol);
+        const opts2 = document.createElement('div'); opts2.className = 'quiz-opts';
+        opts2.innerHTML = '<label class="chk"><input type="checkbox" data-o="required"> Must answer before moving on</label><label class="chk"><input type="checkbox" data-o="allowChange"> Learner can change their answer <span class="muted">(quizzes: try again until right)</span></label>';
+        opts2.querySelectorAll('input').forEach((cb) => { const k = cb.dataset.o; cb.checked = !!b[k]; cb.addEventListener('change', () => { b[k] = cb.checked || undefined; live(); }); });
+        w.appendChild(opts2);
         w.appendChild(field('Feedback after answering (optional)', textarea(b.explain, (v) => { b.explain = v; live(); }, 'Explain the answer…')));
         break;
       }
@@ -770,7 +796,7 @@ async function showStats(cid) {
       <div class="panel" id="funnelP"><h3>How far people got</h3><p class="note">Share of viewers who reached each card. The biggest drops show where people stop.</p><div class="funnel" id="funnel"></div></div>
       <div class="panel"><h3>New viewers, last 30 days</h3><p class="note">First-time viewers per day.</p><div class="daily" id="daily"></div><div class="daily-ax"><span>30 days ago</span><span>Today</span></div></div>
       <div class="panel" id="audP"><h3>Listening</h3><p class="note">How much of each recording people played. "Finished" means at least 90%.</p><div id="aud"></div></div>
-      <div class="panel" id="quizP"><h3>Quiz answers</h3><p class="note">How viewers answered each question (first answer only).</p><div id="quizzes"></div></div>
+      <div class="panel" id="quizP"><h3>Quiz answers</h3><p class="note">How viewers answered each question. Counts each viewer's first answer, or their latest one where changing answers is allowed.</p><div id="quizzes"></div></div>
       <div class="panel"><h3>Recent viewers</h3><p class="note">Anonymous. Each browser gets its own random ID.</p><div style="overflow-x:auto"><table class="recent" id="recent"></table></div></div>`;
     body.querySelector('h1').textContent = course.title || 'Untitled lesson';
 

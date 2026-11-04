@@ -141,6 +141,8 @@ const q = {
                             completed_at = CASE WHEN ? >= ? AND completed_at IS NULL THEN ? ELSE completed_at END
                             WHERE course_id = ? AND viewer_id = ?`),
   answer: db.prepare('INSERT OR IGNORE INTO answers (course_id, viewer_id, block_id, choice, at) VALUES (?, ?, ?, ?, ?)'),
+  answerLatest: db.prepare(`INSERT INTO answers (course_id, viewer_id, block_id, choice, at) VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(course_id, viewer_id, block_id) DO UPDATE SET choice = excluded.choice, at = excluded.at`),
   statViewers: db.prepare('SELECT viewer_id, first_at, last_at, visits, furthest, total, completed_at FROM views WHERE course_id = ? ORDER BY last_at DESC'),
   countUsers: db.prepare('SELECT COUNT(*) AS n FROM users'),
   countAdmins: db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled = 0"),
@@ -576,7 +578,8 @@ async function route(req, res) {
     const row = q.getCourse.get(cid);
     if (!row || !row.published) return send(res, 204, '');
     const t = now();
-    const n = (JSON.parse(row.data).cards || []).length;
+    const cards = JSON.parse(row.data).cards || [];
+    const n = cards.length;
     if (b.e === 'view') q.viewStart.run(cid, vid, t, t, n);
     else if (b.e === 'progress') {
       const i = Math.max(0, Math.min(Number(b.i) | 0, n));
@@ -585,7 +588,8 @@ async function route(req, res) {
     } else if (b.e === 'listen' && /^[a-z0-9]{4,40}$/.test(String(b.b || ''))) {
       q.listen.run(cid, vid, String(b.b), Math.max(0, Math.min(Number(b.p) | 0, 100)), t);
     } else if (b.e === 'answer' && /^[a-z0-9]{4,40}$/.test(String(b.b || ''))) {
-      q.answer.run(cid, vid, String(b.b), Math.max(0, Math.min(Number(b.a) | 0, 20)), t);
+      const blk = cards.flatMap((c) => c.blocks || []).find((x) => x && x.id === String(b.b) && x.type === 'quiz');
+      if (blk) (blk.allowChange ? q.answerLatest : q.answer).run(cid, vid, blk.id, Math.max(0, Math.min(Number(b.a) | 0, (blk.options || []).length - 1)), t);
     }
     return send(res, 204, '');
   }

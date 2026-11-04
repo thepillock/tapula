@@ -213,3 +213,13 @@ select.in{appearance:auto;padding:7px 8px}
 .linkish{background:none;border:0;padding:0;font:inherit;color:var(--ink);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
 .adds{grid-template-columns:repeat(4,1fr)!important}
 .aud-row{grid-template-columns:minmax(160px,320px) 1fr 70px}
+
+/* card style controls */
+.sub-l{font-size:12px;color:var(--muted);font-weight:500;margin:12px 0 6px}
+.sec>h4+.sub-l{margin-top:0}
+.seg{display:inline-flex;background:#f1ece4;border-radius:10px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{border:0;background:none;font:600 12.5px Inter,sans-serif;padding:6px 11px;border-radius:8px;cursor:pointer;color:#5b554d}
+.seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.quiz-opts{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line)}
+/* inline delete confirm on icon buttons */
+.ib.armed{width:auto;padding:0 9px;font-size:12px;font-weight:700;white-space:nowrap;background:#c0392b;color:#fff}

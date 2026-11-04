@@ -26,7 +26,7 @@
 <script>
 (function(){
   var D = window.__TAPULA__, C = D.course, preview = D.preview;
-  var KEY_V = 'tapula_viewer', KEY_P = 'tapula_pos_' + C.id;
+  var KEY_V = 'tapula_viewer', KEY_P = 'tapula_pos_' + C.id, KEY_A = 'tapula_ans_' + C.id, KEY_F = 'tapula_far_' + C.id;
   function rand(){ var a='abcdefghijkmnpqrstuvwxyz23456789',s='',r=new Uint8Array(16); crypto.getRandomValues(r); for(var i=0;i<16;i++)s+=a[r[i]%32]; return s; }
   function ls(k,v){ try{ if(v===undefined) return localStorage.getItem(k); if(v===null) localStorage.removeItem(k); else localStorage.setItem(k,v); }catch(e){ return null; } }
   var viewer = ls(KEY_V); if(!viewer || !/^[a-z0-9]{8,40}$/.test(viewer)){ viewer = rand(); ls(KEY_V, viewer); }
@@ -45,16 +45,21 @@
   var saved = parseInt(ls(KEY_P)||'0',10);
   var start = (saved>0 && saved<n) ? saved : 0;
   var furthest = -1;
+  var answers = {}; try { answers = JSON.parse(ls(KEY_A) || '{}') || {}; } catch(e) { answers = {}; }
+  var far = parseInt(ls(KEY_F) || '0', 10) || 0;
 
   track({e:'view'});
   var player = TapPlayer.play(document.getElementById('root'), C, {
     media: function(id){ return '/media/' + id; },
     start: start,
+    answers: answers,
+    furthest: far,
     onChange: function(i, count, isEnd){
       if(i > furthest){ furthest = i; track({e:'progress', i:i}); }
+      if(i > far){ far = i; ls(KEY_F, String(far)); }
       ls(KEY_P, isEnd ? null : String(i));
     },
-    onAnswer: function(blockId, choice){ track({e:'answer', b:blockId, a:choice}); },
+    onAnswer: function(blockId, choice){ answers[blockId] = choice; ls(KEY_A, JSON.stringify(answers)); track({e:'answer', b:blockId, a:choice}); },
     onListen: function(blockId, pct){ track({e:'listen', b:blockId, p:pct}); }
   });
 

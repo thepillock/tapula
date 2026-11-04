@@ -26,30 +26,45 @@ function block(b,media,opt){
       return g;
     }
     case 'quiz': {
-      var w=h('div','tp-quiz'),opts=b.options||[],fb=h('div','tp-fb'),done=false;
+      var w=h('div','tp-quiz'),opts=b.options||[],fb=h('div','tp-fb'),answered=false,current=-1,btns=[];
+      var change=!!b.allowChange;
+      if(b.required)w.setAttribute('data-required','1');
       w.appendChild(h('div','tp-q',fmt(b.question||'')));
+      if(b.required)w.appendChild(h('div','tp-req','Answer to continue'));
       var hasAns=typeof b.correct==='number'&&b.correct>=0&&b.correct<opts.length;
+      function mark(k,silent){
+        answered=true;current=k;
+        w.classList.add('answered');w.classList.toggle('changeable',change);
+        btns.forEach(function(x){x.classList.remove('right','wrong','picked');});
+        var result;
+        if(hasAns){
+          if(k===b.correct){btns[k].classList.add('right');result='right';}
+          else{btns[k].classList.add('wrong');if(!change)btns[b.correct].classList.add('right');result='wrong';}
+        }else{btns[k].classList.add('picked');result='poll';}
+        try{w.dispatchEvent(new CustomEvent('tp-answered',{bubbles:true}));}catch(_){}
+        if(silent)return;
+        var retry=change&&result==='wrong';
+        var detail={result:result,picked:opts[k],answer:hasAns&&!retry?opts[b.correct]:null,explain:retry?'':(b.explain||''),retry:retry,canChange:change};
+        var ev;
+        try{ev=new CustomEvent('tp-feedback',{bubbles:true,cancelable:true,detail:detail});}catch(_){ev=null;}
+        if(ev)btns[k].dispatchEvent(ev);
+        if(!ev||!ev.defaultPrevented){
+          fb.innerHTML=hasAns?((result==='right'?'<b>Correct!</b> ':'<b>Not quite.</b> ')+(retry?'Have another go.':fmt(b.explain||''))):fmt(b.explain||'Thanks for answering.');
+          fb.classList.add('show');
+        }
+        if(opt.onAnswer&&b.id)opt.onAnswer(b.id,k);
+      }
       opts.forEach(function(o,k){
         var btn=h('button','tp-opt',esc(o));btn.type='button';
         btn.addEventListener('click',function(){
-          if(done)return;done=true;w.classList.add('answered');
-          if(hasAns){
-            w.querySelectorAll('.tp-opt')[b.correct].classList.add('right');
-            if(k!==b.correct)btn.classList.add('wrong');
-          }else btn.classList.add('picked');
-          var detail={result:hasAns?(k===b.correct?'right':'wrong'):'poll',picked:o,answer:hasAns?opts[b.correct]:null,explain:b.explain||''};
-          var ev;
-          try{ev=new CustomEvent('tp-feedback',{bubbles:true,cancelable:true,detail:detail});}catch(_){ev=null;}
-          if(ev)btn.dispatchEvent(ev);
-          if(!ev||!ev.defaultPrevented){
-            fb.innerHTML=hasAns?((k===b.correct?'<b>Correct!</b> ':'<b>Not quite.</b> ')+fmt(b.explain||'')):fmt(b.explain||'Thanks for answering.');
-            fb.classList.add('show');
-          }
-          if(opt.onAnswer&&b.id)opt.onAnswer(b.id,k);
+          if(answered&&(!change||k===current))return;
+          if(answered&&hasAns&&change&&current===b.correct)return; // already right
+          mark(k,false);
         });
-        w.appendChild(btn);
+        btns.push(btn);w.appendChild(btn);
       });
       w.appendChild(fb);
+      if(opt.answers&&b.id&&typeof opt.answers[b.id]==='number'&&opt.answers[b.id]<opts.length)mark(opt.answers[b.id],true);
       return w;
     }
     case 'audio': {
@@ -104,11 +119,13 @@ function renderCard(card,opt){
   var fill=null;
   for(var k=0;k<blocks.length;k++){if(blocks[k].type==='image'&&blocks[k].fill&&blocks[k].asset){fill=blocks[k];break;}}
   var bg=card.bg||'#ffffff';
-  var dark=fill?true:lum(bg)<0.4;
-  var c=h('div','tp-card '+(dark?'tp-dark':'tp-light'));
+  var overlay=fill?(card.overlay||'auto'):'none';
+  var tone=card.text||'auto';
+  var dark=tone==='light'?true:tone==='dark'?false:(fill?overlay!=='light':lum(bg)<0.4);
+  var c=h('div','tp-card '+(dark?'tp-dark':'tp-light')+(fill?' tp-has-bg':'')+(card.shadow?' tp-shadow':''));
   c.style.background=bg;
   c.style.setProperty('--tp-accent',opt.accent||'#ff5a36');
-  if(fill){var bgEl=h('div','tp-bg');bgEl.style.backgroundImage='url("'+media(fill.asset)+'")';c.appendChild(bgEl);c.appendChild(h('div','tp-shade'));}
+  if(fill){var bgEl=h('div','tp-bg');bgEl.style.backgroundImage='url("'+media(fill.asset)+'")';c.appendChild(bgEl);if(overlay!=='none')c.appendChild(h('div','tp-shade tp-shade-'+overlay));}
   var sc=h('div','tp-scroll'),inner=h('div','tp-inner');sc.appendChild(inner);c.appendChild(sc);
   blocks.forEach(function(b){if(b!==fill)inner.appendChild(block(b,media,opt));});
   if(!inner.children.length&&opt.editing)inner.appendChild(h('div','tp-empty','Empty card — add blocks from the panel'));
@@ -122,12 +139,15 @@ function play(root,course,opt){
   var cards=course.cards||[];
   var frame=h('div','tp-frame'),clip=h('div','tp-clip'),track=h('div','tp-track');
   clip.appendChild(track);frame.appendChild(clip);frame.appendChild(h('div','tp-island'));
-  var els=cards.map(function(c){return renderCard(c,{media:opt.media,accent:accent,onAnswer:opt.onAnswer,onListen:opt.onListen});});
+  var answers=opt.answers||{};
+  var els=cards.map(function(c){return renderCard(c,{media:opt.media,accent:accent,answers:answers,onAnswer:function(id,k){answers[id]=k;if(opt.onAnswer)opt.onAnswer(id,k);},onListen:opt.onListen});});
   var end=h('div','tp-card tp-dark tp-end');end.style.background='#16151a';
   end.innerHTML='<div class="tp-scroll"><div class="tp-inner"><div class="tp-done">✓</div><h2 class="tp-h">You’re done</h2><div class="tp-t">'+esc(course.title||'')+'</div><button type="button" class="tp-again">Start again</button></div></div>';
   els.push(end);
   els.forEach(function(e){track.appendChild(e);});
-  var prog=h('div','tp-progress');cards.forEach(function(){prog.appendChild(h('div','tp-seg','<i></i>'));});clip.appendChild(prog);
+  var prog=h('div','tp-progress');
+  cards.forEach(function(_,k){var sg=h('div','tp-seg','<i></i>');sg.title='Card '+(k+1);sg.addEventListener('click',function(){if(sg.classList.contains('reach'))go(k);});prog.appendChild(sg);});
+  clip.appendChild(prog);
   if(opt.onExit){var x=h('button','tp-close','×');x.type='button';x.setAttribute('aria-label','Close');x.addEventListener('click',opt.onExit);clip.appendChild(x);}
   var hint=h('div','tp-hint','Swipe to continue');clip.appendChild(hint);
   var sheetWrap=h('div','tp-sheet-wrap','<div class="tp-sheet-bg"></div><div class="tp-sheet" role="dialog" aria-modal="true" aria-labelledby="tp-sheet-title"><div class="tp-sheet-head"><div class="tp-sheet-ic"></div><div class="tp-sheet-title" id="tp-sheet-title"></div></div><div class="tp-sheet-body"></div><div class="tp-sheet-acts"><button type="button" class="tp-sheet-close">Close</button><button type="button" class="tp-sheet-next">Continue \u203a</button></div></div>');
@@ -140,9 +160,12 @@ function play(root,course,opt){
     t.textContent=d.result==='right'?'Correct!':d.result==='wrong'?'Not quite':'Thanks for answering';
     var html='';
     if(d.result==='wrong'&&d.answer!=null)html+='<p class="tp-sheet-ans">The answer is <b>'+esc(d.answer)+'</b>.</p>';
+    if(d.retry)html+='<p class="tp-sheet-ans">Have another go \u2014 pick a different answer.</p>';
     if(d.result==='poll')html+='<p class="tp-sheet-ans">You chose <b>'+esc(d.picked)+'</b>.</p>';
     if(d.explain)html+='<p>'+fmt(d.explain)+'</p>';
+    if(d.canChange&&d.result==='poll')html+='<p class="tp-sheet-small">You can change your answer at any time.</p>';
     body.innerHTML=html;
+    sheetWrap.querySelector('.tp-sheet-close').textContent=d.retry?'Try again':'Close';
     sheetWrap.querySelector('.tp-sheet-next').textContent=i>=N-2?'Finish \u203a':'Continue \u203a';
     sheetWrap.classList.add('open');sheetOpen=true;
     setTimeout(function(){try{sheetWrap.querySelector('.tp-sheet-next').focus({preventScroll:true});}catch(_){}},50);
@@ -157,9 +180,29 @@ function play(root,course,opt){
   nav.appendChild(prev);nav.appendChild(count);nav.appendChild(next);clip.appendChild(nav);
   root.appendChild(frame);
   root.appendChild(h('div','tp-caption','Drag the card or use ← → keys'));
-  var i=0,N=els.length;
+  var i=0,N=els.length,far=Math.max(0,Math.min(N-1,opt.furthest||0));
+  var toast=h('div','tp-toast');clip.appendChild(toast);var toastT=0;
+  function blockedAt(k){return !!els[k].querySelector('.tp-quiz[data-required]:not(.answered)');}
+  function maxReach(){for(var k=0;k<N;k++)if(blockedAt(k))return k;return N-1;}
+  function nudge(){
+    toast.textContent='Answer the question to continue';toast.classList.add('show');
+    clearTimeout(toastT);toastT=setTimeout(function(){toast.classList.remove('show');},2200);
+    var q=els[i].querySelector('.tp-quiz[data-required]:not(.answered)');
+    if(q){q.classList.remove('tp-shake');void q.offsetWidth;q.classList.add('tp-shake');}
+  }
+  function paintNav(){
+    var locked=i<N-1&&blockedAt(i);
+    next.classList.toggle('tp-locked',locked);
+    hint.style.visibility=locked?'hidden':'';
+    Array.prototype.forEach.call(prog.children,function(s,k){
+      s.classList.toggle('on',k<=i);
+      s.classList.toggle('reach',k<=far&&k!==i&&k<=maxReach());
+    });
+  }
+  track.addEventListener('tp-answered',paintNav);
   function go(n,anim){
     n=Math.max(0,Math.min(N-1,n));
+    if(n>i){var mr=maxReach();if(n>mr){n=Math.max(mr,i);if(n===i)nudge();}}
     closeSheet();
     if(n>0)hint.classList.add('gone');
     i=n;
@@ -170,7 +213,8 @@ function play(root,course,opt){
       e.setAttribute('aria-hidden',k!==i?'true':'false');
       e.inert=k!==i;
     });
-    Array.prototype.forEach.call(prog.children,function(s,k){s.classList.toggle('on',k<=i);});
+    if(i>far)far=i;
+    paintNav();
     frame.classList.toggle('tp-on-light',els[i].classList.contains('tp-light'));
     count.textContent=i<cards.length?(i+1)+' / '+cards.length:'';
     prev.disabled=i===0||i===N-1;next.disabled=i===N-1;
