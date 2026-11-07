@@ -34,13 +34,42 @@ Or use `docker-compose.yml`.
 
 ### Unraid
 
-1. Build the image on the server (or push it to a registry): `docker build -t tapula https://github.com/thepillock/Tapula.git`
+1. Build the image on the server (or push it to a registry): `docker build -t tapula:latest https://github.com/thepillock/tapula.git#main`
 2. **Docker → Add Container**:
-   - Repository: `tapula`
+   - Repository: `tapula:latest`
    - Port: container `3000` → host e.g. `3000`
    - Path: container `/data` → host `/mnt/user/appdata/tapula`
    - Variables: `ADMIN_PASSWORD`, `PUBLIC_URL` (and optionally `MAX_UPLOAD_MB`, `PUID`, `PGID`)
 3. In **Nginx Proxy Manager**, add a proxy host (e.g. `learn.yourdomain`) pointing to `unraid-ip:3000`. Turn on SSL, and raise the upload limit for video by adding `client_max_body_size 200m;` under *Advanced*.
+
+### Live and test builds
+
+The repo has two long-lived branches:
+
+| Branch | Image tag | Container | Use |
+|---|---|---|---|
+| `main` | `tapula:latest` | `tapula` | Live — what learners use |
+| `test` | `tapula:test` | `tapula-test` | Try new versions before they go live |
+
+Build each image from its branch (the `#branch` suffix picks the branch):
+
+```bash
+docker build -t tapula:latest https://github.com/thepillock/tapula.git#main
+docker build -t tapula:test   https://github.com/thepillock/tapula.git#test
+```
+
+Then **Edit → Apply** on the matching container to pick up the new image.
+
+Set up `tapula-test` like the live container, with these differences:
+
+- Repository: `tapula:test` (and set the live container's to `tapula:latest`)
+- Host port: a different one, e.g. `3001`
+- Data path: its own folder, e.g. `/mnt/user/appdata/tapula-test`, so tests never touch live lessons or stats
+- `ADMIN_PASSWORD`: its own (the test instance creates its own admin on first run)
+- `PUBLIC_URL`: the test address, if you give it one in Nginx Proxy Manager
+- `TTS_URL` can point at the same Kokoro container
+
+To promote a tested version: merge `test` into `main`, rebuild `tapula:latest`, and Apply on `tapula`.
 
 ## Text-to-speech (Kokoro)
 
