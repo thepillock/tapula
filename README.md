@@ -1,6 +1,6 @@
 # Tapula
 
-Self-hosted, swipeable micro-lessons, in the spirit of 7taps.
+Self-hosted, swipeable micro-lessons.
 
 - **Accounts:** one admin creates editor accounts. New editors pick their own password on first sign-in, everyone can change their password, and the admin can reset, disable or delete accounts.
 - **Editor:** build lessons from cards. Each card can hold headings, text, images (optionally full-bleed), video, **speech** (type a script, pick a voice, and Tapula generates the narration), quizzes or polls (feedback shows in a pop-up sheet), and button links. Drag to reorder; changes autosave.
