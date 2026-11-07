@@ -34,13 +34,12 @@ Or use `docker-compose.yml`.
 
 ### Unraid
 
-1. Build the image on the server (or push it to a registry): `docker build -t tapula:latest https://github.com/thepillock/tapula.git#main`
-2. **Docker → Add Container**:
-   - Repository: `tapula:latest`
+1. **Docker → Add Container**:
+   - Repository: `ghcr.io/thepillock/tapula:latest`
    - Port: container `3000` → host e.g. `3000`
    - Path: container `/data` → host `/mnt/user/appdata/tapula`
    - Variables: `ADMIN_PASSWORD`, `PUBLIC_URL` (and optionally `MAX_UPLOAD_MB`, `PUID`, `PGID`)
-3. In **Nginx Proxy Manager**, add a proxy host (e.g. `learn.yourdomain`) pointing to `unraid-ip:3000`. Turn on SSL, and raise the upload limit for video by adding `client_max_body_size 200m;` under *Advanced*.
+2. In **Nginx Proxy Manager**, add a proxy host (e.g. `learn.yourdomain`) pointing to `unraid-ip:3000`. Turn on SSL, and raise the upload limit for video by adding `client_max_body_size 200m;` under *Advanced*.
 
 ### Live and test builds
 
@@ -51,25 +50,31 @@ The repo has two long-lived branches:
 | `main` | `tapula:latest` | `tapula` | Live — what learners use |
 | `test` | `tapula:test` | `tapula-test` | Try new versions before they go live |
 
-Build each image from its branch (the `#branch` suffix picks the branch):
+Every push to either branch builds and publishes an image to the GitHub Container Registry (see `.github/workflows/docker.yml`):
+
+| Branch | Image |
+|---|---|
+| `main` | `ghcr.io/thepillock/tapula:latest` |
+| `test` | `ghcr.io/thepillock/tapula:test` |
+
+On Unraid, use those as the container's **Repository**. When a new build is published, Unraid shows the container as having an update, and **Apply update** pulls it. Each build is also tagged with its commit (e.g. `latest-<sha>`), so you can pin or roll back.
+
+Building locally from a branch still works (the `#branch` suffix picks the branch):
 
 ```bash
-docker build -t tapula:latest https://github.com/thepillock/tapula.git#main
-docker build -t tapula:test   https://github.com/thepillock/tapula.git#test
+docker build -t tapula:test https://github.com/thepillock/tapula.git#test
 ```
-
-Then **Edit → Apply** on the matching container to pick up the new image.
 
 Set up `tapula-test` like the live container, with these differences:
 
-- Repository: `tapula:test` (and set the live container's to `tapula:latest`)
+- Repository: `ghcr.io/thepillock/tapula:test` (and the live container's: `ghcr.io/thepillock/tapula:latest`)
 - Host port: a different one, e.g. `3001`
 - Data path: its own folder, e.g. `/mnt/user/appdata/tapula-test`, so tests never touch live lessons or stats
 - `ADMIN_PASSWORD`: its own (the test instance creates its own admin on first run)
 - `PUBLIC_URL`: the test address, if you give it one in Nginx Proxy Manager
 - `TTS_URL` can point at the same Kokoro container
 
-To promote a tested version: merge `test` into `main`, rebuild `tapula:latest`, and Apply on `tapula`.
+To promote a tested version: merge `test` into `main`, wait for the build to finish, then apply the update on `tapula`.
 
 ## Text-to-speech (Kokoro)
 

@@ -1,7 +1,7 @@
 services:
   tapula:
     build: .
-    image: tapula:latest
+    image: ghcr.io/thepillock/tapula:latest
     container_name: tapula
     restart: unless-stopped
     ports:
